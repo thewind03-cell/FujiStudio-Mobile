@@ -1,0 +1,123 @@
+{
+  "schema_version": "2.4.2",
+  "session_id": "sess_xt3_20261120_hanoi_street",
+  "created_at": "2026-11-20T09:15:00Z",
+  "updated_at": "2026-11-20T10:30:00Z",
+  "source_app": "FujiStudio Desktop 2.4.2 Gold Master",
+  "desktop_lut_cache": {
+    "cache_dir": "C:\\Users\\photographer\\AppData\\Local\\FujiStudioAI\\lut_cache",
+    "max_cube_size": 65,
+    "entries": [
+      { "name": "ClassicChrome_Warm.cube", "sha256": "a1b2c3d4e5f6" }
+    ]
+  },
+  "xmp_sidecar_hash": "9f86d081884c7d659a2feaa0c55ad015",
+  "desktop_window_state": {
+    "split_ratio": 0.72,
+    "pinned_loupe": true,
+    "monitor_icc_profile": "DisplayP3_Calibrated_2026.icc"
+  },
+  "items": [
+    {
+      "id": "item_dscf4012",
+      "file_name": "DSCF4012.JPG",
+      "media_uri": "content://media/external/images/media/4012",
+      "film_simulation": "Classic Chrome",
+      "captured_at": "2026-11-20T08:42:11Z",
+      "width": 6240,
+      "height": 4160,
+      "is_raw_paired": true,
+      "rating": 5,
+      "xmp_sidecar_hash": "4d186321c1a7f0f354b297e8914ab240",
+      "histogram_bins": {
+        "luma_16": [12, 34, 88, 140, 210, 320, 412, 390, 280, 190, 145, 92, 60, 35, 18, 7],
+        "clipped_shadows_pct": 0.42,
+        "clipped_highlights_pct": 0.08
+      },
+      "raf_companion_path": "D:\\Shoot_2026\\DSCF4012.RAF",
+      "cull_result": {
+        "status": "keep",
+        "sharpness_score": 0.914,
+        "exposure_score": 0.87,
+        "burst_cluster_id": "cluster_004",
+        "is_burst_anchor": true,
+        "flags": ["eye_focus_locked"],
+        "desktop_dhash_hex": "ff81c3a599007e3c",
+        "laplacian_variance_raw": 1482.6
+      },
+      "edit_recipe": {
+        "dna_rescue": {
+          "enabled": true,
+          "shadow_lift": 18.5,
+          "highlight_rolloff": -12.0,
+          "micro_contrast": 8.0,
+          "skin_protect": 0.75,
+          "desktop_bilateral_sigma_spatial": 4.25,
+          "desktop_anchor_luma": [0.0, 100.0]
+        },
+        "geometry": {
+          "rotation_deg": -0.65,
+          "aspect_ratio": "3:2",
+          "crop_box": [0.02, 0.01, 0.96, 0.96],
+          "flip_horizontal": false,
+          "desktop_warp_interpolation": "LANCZOS4"
+        },
+        "lut": {
+          "enabled": true,
+          "lut_id": "classic_chrome_warm_65",
+          "intensity": 0.45,
+          "desktop_domain_min": [0.0, 0.0, 0.0],
+          "desktop_domain_max": [1.0, 1.0, 1.0]
+        },
+        "export_profile": {
+          "format": "jpeg",
+          "quality": 92,
+          "color_space": "sRGB",
+          "max_long_edge_px": 4096,
+          "desktop_exif_preserve_makernotes": true
+        },
+        "desktop_reinhard_lab_ref_id": "item_dscf4001",
+        "desktop_recipe_revision": 7,
+        "desktop_custom_curve_knots": [
+          { "x": 0.0, "y": 0.0 },
+          { "x": 0.25, "y": 0.29 },
+          { "x": 1.0, "y": 1.0 }
+        ]
+      }
+    }
+  ],
+  "action_proposals": [
+    {
+      "proposal_id": "prop_001",
+      "target_item_id": "item_dscf4012",
+      "action_type": "horizon_level",
+      "confidence": 0.94,
+      "summary": "Level horizon by -0.65 deg",
+      "accepted": true,
+      "patch": {
+        "geometry.rotation_deg": -0.65
+      },
+      "desktop_model_checkpoint": "horizon_v2_4_onnx"
+    }
+  ],
+  "collages": [
+    {
+      "collage_id": "col_story_01",
+      "template_id": "fuji_diptych_vertical",
+      "aspect_ratio": "9:16",
+      "background_hex": "#121212",
+      "spacing_px": 16,
+      "desktop_print_dpi": 300,
+      "slots": [
+        {
+          "slot_index": 0,
+          "item_id": "item_dscf4012",
+          "pan_x": 0.0,
+          "pan_y": -0.05,
+          "zoom": 1.0,
+          "desktop_border_style": "film_sprocket"
+        }
+      ]
+    }
+  ]
+}

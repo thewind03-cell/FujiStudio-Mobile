@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fujistudio.org/schemas/v2_4_2_contract.schema.json",
+  "title": "FujiStudio SessionDocument Contract (Desktop v2.4.2 Compatible)",
+  "description": "Cross-platform immutable session contract shared between FujiStudio Desktop v2.4.2 and FujiStudio Mobile v1.0. Unknown fields at any object level are explicitly permitted and MUST be preserved on round-trip serialization.",
+  "type": "object",
+  "required": ["schema_version", "session_id", "created_at", "items"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2.4.2"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_app": {
+      "type": "string"
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SessionItem" }
+    },
+    "action_proposals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ActionProposal" }
+    },
+    "collages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CollageSpec" }
+    }
+  },
+  "$defs": {
+    "SessionItem": {
+      "type": "object",
+      "required": ["id", "file_name", "edit_recipe"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "file_name": { "type": "string", "minLength": 1 },
+        "media_uri": { "type": ["string", "null"] },
+        "film_simulation": { "type": ["string", "null"] },
+        "captured_at": { "type": ["string", "null"], "format": "date-time" },
+        "width": { "type": ["integer", "null"], "minimum": 1 },
+        "height": { "type": ["integer", "null"], "minimum": 1 },
+        "is_raw_paired": { "type": "boolean" },
+        "rating": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "cull_result": {
+          "oneOf": [
+            { "$ref": "#/$defs/CullResult" },
+            { "type": "null" }
+          ]
+        },
+        "edit_recipe": { "$ref": "#/$defs/EditRecipe" }
+      }
+    },
+    "CullResult": {
+      "type": "object",
+      "required": ["status", "sharpness_score"],
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["keep", "maybe", "reject", "unreviewed"]
+        },
+        "sharpness_score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "exposure_score": {
+          "type": ["number", "null"]
+        },
+        "burst_cluster_id": {
+          "type": ["string", "null"]
+        },
+        "is_burst_anchor": {
+          "type": "boolean"
+        },
+        "flags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "EditRecipe": {
+      "type": "object",
+      "required": ["dna_rescue", "geometry", "lut", "export_profile"],
+      "additionalProperties": true,
+      "properties": {
+        "dna_rescue": { "$ref": "#/$defs/DnaRescueSpec" },
+        "geometry": { "$ref": "#/$defs/GeometrySpec" },
+        "lut": { "$ref": "#/$defs/LutSpec" },
+        "export_profile": { "$ref": "#/$defs/ExportProfileSpec" }
+      }
+    },
+    "DnaRescueSpec": {
+      "type": "object",
+      "required": ["enabled", "shadow_lift"],
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "shadow_lift": { "type": "number", "minimum": -100, "maximum": 100 },
+        "highlight_rolloff": { "type": "number", "minimum": -100, "maximum": 100 },
+        "micro_contrast": { "type": "number", "minimum": -100, "maximum": 100 },
+        "skin_protect": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "GeometrySpec": {
+      "type": "object",
+      "required": ["rotation_deg"],
+      "additionalProperties": true,
+      "properties": {
+        "rotation_deg": { "type": "number", "minimum": -180, "maximum": 180 },
+        "aspect_ratio": { "type": ["string", "null"] },
+        "crop_box": {
+          "type": ["array", "null"],
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "flip_horizontal": { "type": "boolean" }
+      }
+    },
+    "LutSpec": {
+      "type": "object",
+      "required": ["enabled", "intensity"],
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "lut_id": { "type": ["string", "null"] },
+        "intensity": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "ExportProfileSpec": {
+      "type": "object",
+      "required": ["format", "quality"],
+      "additionalProperties": true,
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["jpeg", "png", "webp", "heif"]
+        },
+        "quality": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "color_space": { "type": "string" },
+        "max_long_edge_px": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "ActionProposal": {
+      "type": "object",
+      "required": ["proposal_id", "target_item_id", "action_type", "confidence", "accepted"],
+      "additionalProperties": true,
+      "properties": {
+        "proposal_id": { "type": "string", "minLength": 1 },
+        "target_item_id": { "type": "string", "minLength": 1 },
+        "action_type": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "summary": { "type": ["string", "null"] },
+        "accepted": { "type": "boolean" },
+        "patch": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "CollageSpec": {
+      "type": "object",
+      "required": ["collage_id", "template_id", "aspect_ratio", "slots"],
+      "additionalProperties": true,
+      "properties": {
+        "collage_id": { "type": "string", "minLength": 1 },
+        "template_id": { "type": "string", "minLength": 1 },
+        "aspect_ratio": { "type": "string", "minLength": 1 },
+        "background_hex": { "type": "string" },
+        "spacing_px": { "type": "integer", "minimum": 0 },
+        "slots": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CollageSlot" }
+        }
+      }
+    },
+    "CollageSlot": {
+      "type": "object",
+      "required": ["slot_index", "item_id"],
+      "additionalProperties": true,
+      "properties": {
+        "slot_index": { "type": "integer", "minimum": 0 },
+        "item_id": { "type": "string", "minLength": 1 },
+        "pan_x": { "type": "number" },
+        "pan_y": { "type": "number" },
+        "zoom": { "type": "number", "minimum": 0.1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+# Copy this file to android/key.properties (gitignored) or generate a local
+# internal staging keystore via scripts/gen_staging_keystore.ps1.
+storePassword=REPLACE_WITH_STORE_PASSWORD
+keyPassword=REPLACE_WITH_KEY_PASSWORD
+keyAlias=fujistudio_staging
+storeFile=app/staging-release.jks
