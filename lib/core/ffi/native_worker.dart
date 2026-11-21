@@ -24,6 +24,57 @@ final class InvertRgbaResult {
   double get elapsedMilliseconds => elapsedMicroseconds / 1000.0;
 }
 
+/// Result returned by [NativeWorker.extractRafPreviewFromFd] and
+/// [NativeWorker.extractRafPreviewFromPath].
+final class RafExtractionResult {
+  const RafExtractionResult({
+    required this.statusCode,
+    required this.elapsedMicroseconds,
+    required this.jpegOffset,
+    required this.jpegLength,
+    required this.jpegWidth,
+    required this.jpegHeight,
+    required this.exifOrientation,
+    required this.hasExifTag,
+    required this.cameraModel,
+  });
+
+  final int statusCode;
+  final int elapsedMicroseconds;
+  final int jpegOffset;
+  final int jpegLength;
+  final int jpegWidth;
+  final int jpegHeight;
+  final int exifOrientation;
+  final bool hasExifTag;
+  final String cameraModel;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+  double get elapsedMilliseconds => elapsedMicroseconds / 1000.0;
+}
+
+/// Result returned by [NativeWorker.inspectJpegBytes].
+final class JpegInspectResult {
+  const JpegInspectResult({
+    required this.statusCode,
+    required this.elapsedMicroseconds,
+    required this.exifOrientation,
+    required this.hasExifTag,
+    required this.width,
+    required this.height,
+  });
+
+  final int statusCode;
+  final int elapsedMicroseconds;
+  final int exifOrientation;
+  final bool hasExifTag;
+  final int width;
+  final int height;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+  double get elapsedMilliseconds => elapsedMicroseconds / 1000.0;
+}
+
 /// Long-lived background Isolate bridging Dart requests to the stateless
 /// C++20 FujiStudio core over `dart:ffi`.
 ///
@@ -193,6 +244,46 @@ final class NativeWorker {
     return result;
   }
 
+  /// Extracts the embedded JPEG preview from an open POSIX [fd] without
+  /// transferring `.RAF` bytes across Isolates and without closing [fd].
+  Future<RafExtractionResult> extractRafPreviewFromFd({
+    required int fd,
+    required String outJpegPath,
+  }) async {
+    return _sendRequest<RafExtractionResult>(
+      (id) => _ExtractRafFromFdRequest(
+        id: id,
+        fd: fd,
+        outJpegPath: outJpegPath,
+      ),
+    );
+  }
+
+  /// Extracts the embedded JPEG preview directly from [rafPath] on disk and
+  /// writes it atomically to [outJpegPath].
+  Future<RafExtractionResult> extractRafPreviewFromPath({
+    required String rafPath,
+    required String outJpegPath,
+  }) async {
+    return _sendRequest<RafExtractionResult>(
+      (id) => _ExtractRafFromPathRequest(
+        id: id,
+        rafPath: rafPath,
+        outJpegPath: outJpegPath,
+      ),
+    );
+  }
+
+  /// Inspects an encoded JPEG buffer for EXIF Orientation and SOF dimensions.
+  Future<JpegInspectResult> inspectJpegBytes(Uint8List jpegBytes) async {
+    return _sendRequest<JpegInspectResult>(
+      (id) => _InspectJpegRequest(
+        id: id,
+        jpegBytes: TransferableTypedData.fromList(<Uint8List>[jpegBytes]),
+      ),
+    );
+  }
+
   /// Idempotently shuts down the background Isolate and releases all ports.
   ///
   /// Concurrent or repeated calls return the exact same [Future] and complete
@@ -341,6 +432,42 @@ void _workerEntryPoint(_WorkerBootstrap bootstrap) {
       }
       return;
     }
+
+    if (message is _ExtractRafFromFdRequest) {
+      try {
+        final result = _executeExtractRafFromFd(bindings, message);
+        responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+      } catch (error) {
+        responsePort?.send(
+          _WorkerResponse(id: message.id, error: error.toString()),
+        );
+      }
+      return;
+    }
+
+    if (message is _ExtractRafFromPathRequest) {
+      try {
+        final result = _executeExtractRafFromPath(bindings, message);
+        responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+      } catch (error) {
+        responsePort?.send(
+          _WorkerResponse(id: message.id, error: error.toString()),
+        );
+      }
+      return;
+    }
+
+    if (message is _InspectJpegRequest) {
+      try {
+        final result = _executeInspectJpeg(bindings, message);
+        responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+      } catch (error) {
+        responsePort?.send(
+          _WorkerResponse(id: message.id, error: error.toString()),
+        );
+      }
+      return;
+    }
   });
 }
 
@@ -462,6 +589,137 @@ _InvertRgbaPayload _executeInvertRgba(
   }
 }
 
+RafExtractionResult _buildRafResult(
+  int statusCode,
+  int elapsedMicroseconds,
+  FsRafMetadata meta,
+) {
+  final modelChars = <int>[];
+  for (var i = 0; i < FS_RAF_CAMERA_MODEL_MAX; i++) {
+    final code = meta.camera_model[i];
+    if (code == 0) break;
+    modelChars.add(code & 0xFF);
+  }
+  return RafExtractionResult(
+    statusCode: statusCode,
+    elapsedMicroseconds: elapsedMicroseconds,
+    jpegOffset: meta.jpeg_offset,
+    jpegLength: meta.jpeg_length,
+    jpegWidth: meta.jpeg_width,
+    jpegHeight: meta.jpeg_height,
+    exifOrientation: meta.exif_orientation,
+    hasExifTag: meta.has_exif_tag != 0,
+    cameraModel: String.fromCharCodes(modelChars),
+  );
+}
+
+RafExtractionResult _executeExtractRafFromFd(
+  FujiStudioBindings bindings,
+  _ExtractRafFromFdRequest request,
+) {
+  final sw = Stopwatch()..start();
+  ffi.Pointer<Utf8> outPathPtr = ffi.nullptr;
+  ffi.Pointer<FsRafMetadata> metaPtr = ffi.nullptr;
+  try {
+    outPathPtr = request.outJpegPath.toNativeUtf8();
+    metaPtr = calloc<FsRafMetadata>();
+    final rc = bindings.fs_raf_extract_jpeg_from_fd(
+      request.fd,
+      outPathPtr.cast<ffi.Char>(),
+      metaPtr,
+    );
+    sw.stop();
+    return _buildRafResult(rc, sw.elapsedMicroseconds, metaPtr.ref);
+  } finally {
+    if (metaPtr != ffi.nullptr) {
+      calloc.free(metaPtr);
+    }
+    if (outPathPtr != ffi.nullptr) {
+      calloc.free(outPathPtr);
+    }
+  }
+}
+
+RafExtractionResult _executeExtractRafFromPath(
+  FujiStudioBindings bindings,
+  _ExtractRafFromPathRequest request,
+) {
+  final sw = Stopwatch()..start();
+  ffi.Pointer<Utf8> rafPathPtr = ffi.nullptr;
+  ffi.Pointer<Utf8> outPathPtr = ffi.nullptr;
+  ffi.Pointer<FsRafMetadata> metaPtr = ffi.nullptr;
+  try {
+    rafPathPtr = request.rafPath.toNativeUtf8();
+    outPathPtr = request.outJpegPath.toNativeUtf8();
+    metaPtr = calloc<FsRafMetadata>();
+    final rc = bindings.fs_raf_extract_jpeg_from_path(
+      rafPathPtr.cast<ffi.Char>(),
+      outPathPtr.cast<ffi.Char>(),
+      metaPtr,
+    );
+    sw.stop();
+    return _buildRafResult(rc, sw.elapsedMicroseconds, metaPtr.ref);
+  } finally {
+    if (metaPtr != ffi.nullptr) {
+      calloc.free(metaPtr);
+    }
+    if (outPathPtr != ffi.nullptr) {
+      calloc.free(outPathPtr);
+    }
+    if (rafPathPtr != ffi.nullptr) {
+      calloc.free(rafPathPtr);
+    }
+  }
+}
+
+JpegInspectResult _executeInspectJpeg(
+  FujiStudioBindings bindings,
+  _InspectJpegRequest request,
+) {
+  final sw = Stopwatch()..start();
+  ffi.Pointer<ffi.Uint8> bytesPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> orientationPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> hasExifPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint32> widthPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint32> heightPtr = ffi.nullptr;
+  try {
+    final bytes = request.jpegBytes.materialize().asUint8List();
+    final allocLen = bytes.isEmpty ? 1 : bytes.length;
+    bytesPtr = calloc<ffi.Uint8>(allocLen);
+    if (bytes.isNotEmpty) {
+      bytesPtr.asTypedList(bytes.length).setAll(0, bytes);
+    }
+    orientationPtr = calloc<ffi.Uint8>();
+    hasExifPtr = calloc<ffi.Uint8>();
+    widthPtr = calloc<ffi.Uint32>();
+    heightPtr = calloc<ffi.Uint32>();
+
+    final rc = bindings.fs_jpeg_inspect_buffer(
+      bytesPtr,
+      bytes.length,
+      orientationPtr,
+      hasExifPtr,
+      widthPtr,
+      heightPtr,
+    );
+    sw.stop();
+    return JpegInspectResult(
+      statusCode: rc,
+      elapsedMicroseconds: sw.elapsedMicroseconds,
+      exifOrientation: orientationPtr.value,
+      hasExifTag: hasExifPtr.value != 0,
+      width: widthPtr.value,
+      height: heightPtr.value,
+    );
+  } finally {
+    if (heightPtr != ffi.nullptr) calloc.free(heightPtr);
+    if (widthPtr != ffi.nullptr) calloc.free(widthPtr);
+    if (hasExifPtr != ffi.nullptr) calloc.free(hasExifPtr);
+    if (orientationPtr != ffi.nullptr) calloc.free(orientationPtr);
+    if (bytesPtr != ffi.nullptr) calloc.free(bytesPtr);
+  }
+}
+
 final class _WorkerBootstrap {
   const _WorkerBootstrap({
     required this.replyPort,
@@ -504,6 +762,37 @@ final class _InvertRgbaRequest extends _WorkerRequest {
   final int inputByteLength;
   final int width;
   final int height;
+}
+
+final class _ExtractRafFromFdRequest extends _WorkerRequest {
+  const _ExtractRafFromFdRequest({
+    required super.id,
+    required this.fd,
+    required this.outJpegPath,
+  });
+
+  final int fd;
+  final String outJpegPath;
+}
+
+final class _ExtractRafFromPathRequest extends _WorkerRequest {
+  const _ExtractRafFromPathRequest({
+    required super.id,
+    required this.rafPath,
+    required this.outJpegPath,
+  });
+
+  final String rafPath;
+  final String outJpegPath;
+}
+
+final class _InspectJpegRequest extends _WorkerRequest {
+  const _InspectJpegRequest({
+    required super.id,
+    required this.jpegBytes,
+  });
+
+  final TransferableTypedData jpegBytes;
 }
 
 final class _ShutdownRequest {

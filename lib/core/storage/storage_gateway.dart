@@ -1,54 +1,112 @@
 import 'package:flutter/foundation.dart';
 
-/// Platform-agnostic descriptor for a photo asset accessible through
-/// Android Scoped Storage (MediaStore) or iOS PhotoKit.
+/// Platform-agnostic gallery read permission state.
+enum StoragePermissionState { granted, limited, denied }
+
+/// Represents an open read-only native file descriptor managed by the host
+/// platform (e.g., Android [ParcelFileDescriptor]).
+///
+/// Callers MUST release [handleId] via [StorageGateway.closeFd] in a `finally`
+/// block and MUST NOT close [fd] directly from C++.
 @immutable
-final class MediaAssetDescriptor {
-  const MediaAssetDescriptor({
-    required this.uri,
-    required this.displayName,
-    required this.mimeType,
-    this.width,
-    this.height,
-    this.capturedAt,
+final class OpenedNativeFd {
+  const OpenedNativeFd({
+    required this.handleId,
+    required this.fd,
+    required this.sizeBytes,
   });
 
-  /// Platform URI (`content://...` on Android MediaStore, `ph://...` on iOS).
-  final String uri;
-  final String displayName;
-  final String mimeType;
-  final int? width;
-  final int? height;
-  final DateTime? capturedAt;
+  final String handleId;
+  final int fd;
+  final int sizeBytes;
 }
 
-/// Abstract storage contract decoupling FujiStudio Mobile's core pipeline from
-/// platform media APIs (Android MediaStore Scoped Storage / iOS PhotoKit).
-///
-/// Slice 0 locks the interface only; concrete platform implementations belong
-/// to subsequent slices.
+/// Result of platform-accelerated subsampled JPEG proxy decoding.
+@immutable
+final class ProxyDecodeResult {
+  const ProxyDecodeResult({
+    required this.width,
+    required this.height,
+    required this.byteSize,
+  });
+
+  final int width;
+  final int height;
+  final int byteSize;
+}
+
+/// Platform-agnostic album/bucket descriptor returned by [StorageGateway].
+@immutable
+final class MediaAlbumDescriptor {
+  const MediaAlbumDescriptor({
+    required this.albumId,
+    required this.name,
+    required this.count,
+    this.coverUri,
+  });
+
+  final String albumId;
+  final String name;
+  final int count;
+  final String? coverUri;
+}
+
+/// Platform-agnostic media file descriptor returned by [StorageGateway].
+@immutable
+final class RawMediaFileDescriptor {
+  const RawMediaFileDescriptor({
+    required this.mediaId,
+    required this.uri,
+    required this.displayName,
+    required this.relativePath,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.dateTakenMs,
+    required this.dateModifiedSec,
+    this.width,
+    this.height,
+  });
+
+  final String mediaId;
+  final String uri;
+  final String displayName;
+  final String relativePath;
+  final String mimeType;
+  final int sizeBytes;
+  final int? dateTakenMs;
+  final int dateModifiedSec;
+  final int? width;
+  final int? height;
+}
+
+/// Platform-neutral storage gateway decoupling FujiStudio Mobile's core
+/// pipeline from Android Scoped Storage (MediaStore) and iOS PhotoKit.
 abstract interface class StorageGateway {
-  /// Returns `true` if read permission for user images is currently granted.
-  Future<bool> hasReadPermission();
+  Future<StoragePermissionState> getPermissionState();
 
-  /// Requests platform-appropriate scoped read permission for images.
-  Future<bool> requestReadPermission();
+  Future<StoragePermissionState> requestReadPermission();
 
-  /// Lists readable image asset descriptors from the platform gallery.
-  Future<List<MediaAssetDescriptor>> listImageAssets({
-    int limit = 100,
+  Future<List<MediaAlbumDescriptor>> listAlbums();
+
+  Future<List<RawMediaFileDescriptor>> listMediaInAlbum({
+    required String albumId,
+    int limit = 200,
     int offset = 0,
   });
 
-  /// Reads raw encoded bytes for the given platform asset [uri].
-  Future<Uint8List> readAssetBytes(String uri);
+  Future<OpenedNativeFd?> openReadOnlyFd(String uri);
 
-  /// Persists an exported image into the platform gallery via Scoped Storage
-  /// / PhotoKit and returns the newly created asset URI.
-  Future<String> saveExportedImage({
-    required Uint8List bytes,
-    required String displayName,
-    required String mimeType,
-    String? relativeAlbum,
+  Future<void> closeFd(String handleId);
+
+  Future<ProxyDecodeResult> decodeToProxyJpeg({
+    required String source,
+    required bool isContentUri,
+    required String outJpegPath,
+    int maxLongEdge = 1600,
+    int? orientationOverride,
   });
+
+  Future<String> getProxyCacheDirectory();
+
+  Future<String> getSessionStorageDirectory();
 }

@@ -17,6 +17,7 @@ option(FUJISTUDIO_BUILD_SHARED "Build shared library" ${_FS_DEFAULT_BUILD_SHARED
 if(FUJISTUDIO_BUILD_SHARED)
   add_library(fujistudio_core SHARED
     src/fujistudio_c_api.cpp
+    src/raf_preview_extractor.cpp
   )
   target_compile_definitions(fujistudio_core
     PRIVATE
@@ -25,6 +26,7 @@ if(FUJISTUDIO_BUILD_SHARED)
 else()
   add_library(fujistudio_core STATIC
     src/fujistudio_c_api.cpp
+    src/raf_preview_extractor.cpp
   )
   target_compile_definitions(fujistudio_core
     PUBLIC
@@ -128,5 +130,22 @@ else()
     endif()
 
     add_test(NAME core_abi_test COMMAND core_abi_test)
+
+    add_executable(raf_extractor_fuzz_test tests/raf_extractor_fuzz_test.cpp)
+    target_link_libraries(raf_extractor_fuzz_test PRIVATE fujistudio_core)
+    set_target_properties(raf_extractor_fuzz_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    if(MSVC)
+      target_compile_options(raf_extractor_fuzz_test PRIVATE /W4 /permissive-)
+    else()
+      target_compile_options(raf_extractor_fuzz_test PRIVATE -Wall -Wextra -Wpedantic)
+      if(_FS_SANITIZER_FLAGS)
+        target_compile_options(raf_extractor_fuzz_test PRIVATE ${_FS_SANITIZER_FLAGS})
+        target_link_options(raf_extractor_fuzz_test PRIVATE -fsanitize=address,undefined)
+      endif()
+    endif()
+
+    add_test(NAME raf_extractor_fuzz_test COMMAND raf_extractor_fuzz_test)
   endif()
 endif()

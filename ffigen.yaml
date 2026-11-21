@@ -11,12 +11,17 @@ compiler-opts:
 functions:
   include:
     - 'fs_.*'
+structs:
+  include:
+    - 'FsRafMetadata'
 enums:
   include:
     - 'FsStatusCode'
+    - 'FsExifOrientation'
 macros:
   include:
     - 'FS_MAX_IMAGE_DIMENSION'
+    - 'FS_RAF_.*'
 comments:
   style: any
   length: full

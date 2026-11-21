@@ -98,9 +98,221 @@ class FujiStudioBindings {
           ffi.Pointer<ffi.Size>,
         )
       >();
+
+  /// Inspects a JPEG buffer for EXIF Orientation (0x0112) and SOF0/SOF2 width/height.
+  int fs_jpeg_inspect_buffer(
+    ffi.Pointer<ffi.Uint8> jpeg_bytes,
+    int jpeg_len,
+    ffi.Pointer<ffi.Uint8> out_orientation,
+    ffi.Pointer<ffi.Uint8> out_has_exif_tag,
+    ffi.Pointer<ffi.Uint32> out_width,
+    ffi.Pointer<ffi.Uint32> out_height,
+  ) {
+    return _fs_jpeg_inspect_buffer(
+      jpeg_bytes,
+      jpeg_len,
+      out_orientation,
+      out_has_exif_tag,
+      out_width,
+      out_height,
+    );
+  }
+
+  late final _fs_jpeg_inspect_bufferPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Pointer<ffi.Uint32>,
+            ffi.Pointer<ffi.Uint32>,
+          )
+        >
+      >('fs_jpeg_inspect_buffer');
+  late final _fs_jpeg_inspect_buffer = _fs_jpeg_inspect_bufferPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.Uint32>,
+          ffi.Pointer<ffi.Uint32>,
+        )
+      >();
+
+  /// Extracts the embedded JPEG preview from an in-memory .RAF byte slice.
+  /// On success (FS_OK), caller owns `*out_jpeg` and MUST free it via
+  /// `fs_free_buffer(*out_jpeg)`. On error, `*out_jpeg` is set to NULL and
+  /// `*out_jpeg_len` is set to 0 when non-NULL.
+  int fs_raf_extract_jpeg_buffer(
+    ffi.Pointer<ffi.Uint8> raf_bytes,
+    int raf_len,
+    ffi.Pointer<ffi.Pointer<ffi.Uint8>> out_jpeg,
+    ffi.Pointer<ffi.Size> out_jpeg_len,
+    ffi.Pointer<FsRafMetadata> out_meta,
+  ) {
+    return _fs_raf_extract_jpeg_buffer(
+      raf_bytes,
+      raf_len,
+      out_jpeg,
+      out_jpeg_len,
+      out_meta,
+    );
+  }
+
+  late final _fs_raf_extract_jpeg_bufferPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+            ffi.Pointer<ffi.Size>,
+            ffi.Pointer<FsRafMetadata>,
+          )
+        >
+      >('fs_raf_extract_jpeg_buffer');
+  late final _fs_raf_extract_jpeg_buffer = _fs_raf_extract_jpeg_bufferPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+          ffi.Pointer<ffi.Size>,
+          ffi.Pointer<FsRafMetadata>,
+        )
+      >();
+
+  /// Extracts the embedded JPEG preview from a POSIX file descriptor (`raf_fd`)
+  /// using `fstat` and `pread` without ever closing `raf_fd`, and writes it
+  /// atomically to `out_jpeg_path_utf8`. Returns FS_ERR_UNSUPPORTED_PLATFORM on
+  /// Windows.
+  int fs_raf_extract_jpeg_from_fd(
+    int raf_fd,
+    ffi.Pointer<ffi.Char> out_jpeg_path_utf8,
+    ffi.Pointer<FsRafMetadata> out_meta,
+  ) {
+    return _fs_raf_extract_jpeg_from_fd(raf_fd, out_jpeg_path_utf8, out_meta);
+  }
+
+  late final _fs_raf_extract_jpeg_from_fdPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Int32,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<FsRafMetadata>,
+          )
+        >
+      >('fs_raf_extract_jpeg_from_fd');
+  late final _fs_raf_extract_jpeg_from_fd = _fs_raf_extract_jpeg_from_fdPtr
+      .asFunction<
+        int Function(int, ffi.Pointer<ffi.Char>, ffi.Pointer<FsRafMetadata>)
+      >();
+
+  /// Extracts the embedded JPEG preview directly from a .RAF file path on disk
+  /// (reading only the 92-byte header and the embedded JPEG slice) and writes it
+  /// atomically to `out_jpeg_path_utf8`.
+  int fs_raf_extract_jpeg_from_path(
+    ffi.Pointer<ffi.Char> raf_path_utf8,
+    ffi.Pointer<ffi.Char> out_jpeg_path_utf8,
+    ffi.Pointer<FsRafMetadata> out_meta,
+  ) {
+    return _fs_raf_extract_jpeg_from_path(
+      raf_path_utf8,
+      out_jpeg_path_utf8,
+      out_meta,
+    );
+  }
+
+  late final _fs_raf_extract_jpeg_from_pathPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<FsRafMetadata>,
+          )
+        >
+      >('fs_raf_extract_jpeg_from_path');
+  late final _fs_raf_extract_jpeg_from_path = _fs_raf_extract_jpeg_from_pathPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<FsRafMetadata>,
+        )
+      >();
 }
 
 const int FS_MAX_IMAGE_DIMENSION = 16384;
+
+const int FS_RAF_CAMERA_MODEL_MAX = 33;
+
+const int FS_RAF_MAX_JPEG_BYTES = 33554432;
+
+const int FS_RAF_MIN_HEADER_BYTES = 92;
+
+const int FS_RAF_MIN_JPEG_BYTES = 128;
+
+enum FsExifOrientation {
+  FS_ORIENTATION_NORMAL(1),
+  FS_ORIENTATION_FLIP_H(2),
+  FS_ORIENTATION_ROTATE_180(3),
+  FS_ORIENTATION_FLIP_V(4),
+  FS_ORIENTATION_TRANSPOSE(5),
+  FS_ORIENTATION_ROTATE_90(6),
+  FS_ORIENTATION_TRANSVERSE(7),
+  FS_ORIENTATION_ROTATE_270(8);
+
+  final int value;
+  const FsExifOrientation(this.value);
+
+  static FsExifOrientation fromValue(int value) => switch (value) {
+    1 => FS_ORIENTATION_NORMAL,
+    2 => FS_ORIENTATION_FLIP_H,
+    3 => FS_ORIENTATION_ROTATE_180,
+    4 => FS_ORIENTATION_FLIP_V,
+    5 => FS_ORIENTATION_TRANSPOSE,
+    6 => FS_ORIENTATION_ROTATE_90,
+    7 => FS_ORIENTATION_TRANSVERSE,
+    8 => FS_ORIENTATION_ROTATE_270,
+    _ => throw ArgumentError('Unknown value for FsExifOrientation: $value'),
+  };
+}
+
+/// Explicit 56-byte POD layout for Dart ffigen compatibility.
+final class FsRafMetadata extends ffi.Struct {
+  @ffi.Uint32()
+  external int jpeg_offset;
+
+  @ffi.Uint32()
+  external int jpeg_length;
+
+  @ffi.Uint32()
+  external int jpeg_width;
+
+  @ffi.Uint32()
+  external int jpeg_height;
+
+  @ffi.Uint8()
+  external int exif_orientation;
+
+  @ffi.Uint8()
+  external int has_exif_tag;
+
+  @ffi.Array.multi([2])
+  external ffi.Array<ffi.Uint8> reserved;
+
+  @ffi.Array.multi([33])
+  external ffi.Array<ffi.Char> camera_model;
+
+  @ffi.Array.multi([3])
+  external ffi.Array<ffi.Uint8> pad;
+}
 
 /// Standard status / error codes returned by FujiStudio C ABI functions.
 enum FsStatusCode {
@@ -108,7 +320,17 @@ enum FsStatusCode {
   FS_ERR_NULL_POINTER(-1),
   FS_ERR_INVALID_DIMENSIONS(-2),
   FS_ERR_OVERFLOW(-3),
-  FS_ERR_ALLOC_FAILED(-4);
+  FS_ERR_ALLOC_FAILED(-4),
+  FS_ERR_IO_OPEN_FAILED(-10),
+  FS_ERR_IO_READ_FAILED(-11),
+  FS_ERR_IO_WRITE_FAILED(-12),
+  FS_ERR_RAF_INVALID_MAGIC(-13),
+  FS_ERR_RAF_TRUNCATED(-14),
+  FS_ERR_RAF_INVALID_RANGE(-15),
+  FS_ERR_RAF_JPEG_TOO_LARGE(-16),
+  FS_ERR_JPEG_INVALID_SOI(-17),
+  FS_ERR_JPEG_INVALID_EOI(-18),
+  FS_ERR_UNSUPPORTED_PLATFORM(-19);
 
   final int value;
   const FsStatusCode(this.value);
@@ -119,6 +341,16 @@ enum FsStatusCode {
     -2 => FS_ERR_INVALID_DIMENSIONS,
     -3 => FS_ERR_OVERFLOW,
     -4 => FS_ERR_ALLOC_FAILED,
+    -10 => FS_ERR_IO_OPEN_FAILED,
+    -11 => FS_ERR_IO_READ_FAILED,
+    -12 => FS_ERR_IO_WRITE_FAILED,
+    -13 => FS_ERR_RAF_INVALID_MAGIC,
+    -14 => FS_ERR_RAF_TRUNCATED,
+    -15 => FS_ERR_RAF_INVALID_RANGE,
+    -16 => FS_ERR_RAF_JPEG_TOO_LARGE,
+    -17 => FS_ERR_JPEG_INVALID_SOI,
+    -18 => FS_ERR_JPEG_INVALID_EOI,
+    -19 => FS_ERR_UNSUPPORTED_PLATFORM,
     _ => throw ArgumentError('Unknown value for FsStatusCode: $value'),
   };
 }

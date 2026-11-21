@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Scoped Storage image read permissions (Android 13+ / API 33+). -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Android 14+ (API 34+) partial photo picker access state. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <!-- Legacy image read fallback strictly capped at Android 12L (API 32). -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"

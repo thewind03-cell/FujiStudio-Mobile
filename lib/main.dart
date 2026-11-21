@@ -1,9 +1,22 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'features/diagnostics/day0_diagnostics_screen.dart';
+import 'core/di/app_providers.dart';
+import 'core/ffi/native_worker.dart';
+import 'core/theme/fuji_theme.dart';
+import 'features/session_picker/album_picker_screen.dart';
 
-void main() {
-  runApp(const FujiStudioMobileApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final worker = await NativeWorker.spawn();
+  runApp(
+    ProviderScope(
+      overrides: <Override>[
+        nativeWorkerProvider.overrideWithValue(worker),
+      ],
+      child: const FujiStudioMobileApp(),
+    ),
+  );
 }
 
 class FujiStudioMobileApp extends StatelessWidget {
@@ -14,14 +27,8 @@ class FujiStudioMobileApp extends StatelessWidget {
     return MaterialApp(
       title: 'FujiStudio Mobile',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF007A5E),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
-      home: const Day0DiagnosticsScreen(),
+      theme: FujiTheme.dark(),
+      home: const AlbumPickerScreen(),
     );
   }
 }
