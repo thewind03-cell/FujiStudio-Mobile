@@ -76,6 +76,46 @@ final class _FakeStudioWorker implements StudioNativeGateway {
   }
 
   @override
+  Future<GeometryProposalNative> analyzeGeometryOnSurface({
+    required int surfaceId,
+    required int targetAspectPreset,
+  }) async {
+    return GeometryProposalNative(
+      statusCode: FsStatusCode.FS_OK.value,
+      elapsedMicroseconds: 450,
+      suggestedRotationDeg: -2.4,
+      horizonConfidence: 0.91,
+      suggestedCropBox: const NormCropBoxData(
+        left: 0.05,
+        top: 0.05,
+        right: 0.95,
+        bottom: 0.95,
+      ),
+      cropConfidence: 0.88,
+      saliencyCx: 0.5,
+      saliencyCy: 0.5,
+      hasHorizonLine: true,
+      targetAspectPreset: targetAspectPreset,
+    );
+  }
+
+  @override
+  Future<StudioRenderResult> renderGeometryOnSurface({
+    required int surfaceId,
+    required GeometryNativeParams params,
+    required int outWidth,
+    required int outHeight,
+  }) async {
+    return StudioRenderResult(
+      statusCode: FsStatusCode.FS_OK.value,
+      renderTimeMicros: 900,
+      width: outWidth,
+      height: outHeight,
+      rgbaBytes: Uint8List(outWidth * outHeight * 4),
+    );
+  }
+
+  @override
   Future<void> closeStudioSurface(int surfaceId) async {
     closedSurfaceIds.add(surfaceId);
   }

@@ -19,6 +19,8 @@ if(FUJISTUDIO_BUILD_SHARED)
     src/fujistudio_c_api.cpp
     src/raf_preview_extractor.cpp
     src/dna_rescue_engine.cpp
+    src/geometry_crop_engine.cpp
+    src/collage_stitcher.cpp
   )
   target_compile_definitions(fujistudio_core
     PRIVATE
@@ -29,6 +31,8 @@ else()
     src/fujistudio_c_api.cpp
     src/raf_preview_extractor.cpp
     src/dna_rescue_engine.cpp
+    src/geometry_crop_engine.cpp
+    src/collage_stitcher.cpp
   )
   target_compile_definitions(fujistudio_core
     PUBLIC
@@ -167,5 +171,22 @@ else()
     endif()
 
     add_test(NAME dna_rescue_property_test COMMAND dna_rescue_property_test)
+
+    add_executable(geometry_collage_property_test tests/geometry_collage_property_test.cpp)
+    target_link_libraries(geometry_collage_property_test PRIVATE fujistudio_core)
+    set_target_properties(geometry_collage_property_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    if(MSVC)
+      target_compile_options(geometry_collage_property_test PRIVATE /W4 /permissive-)
+    else()
+      target_compile_options(geometry_collage_property_test PRIVATE -Wall -Wextra -Wpedantic)
+      if(_FS_SANITIZER_FLAGS)
+        target_compile_options(geometry_collage_property_test PRIVATE ${_FS_SANITIZER_FLAGS})
+        target_link_options(geometry_collage_property_test PRIVATE -fsanitize=address,undefined)
+      endif()
+    endif()
+
+    add_test(NAME geometry_collage_property_test COMMAND geometry_collage_property_test)
   endif()
 endif()

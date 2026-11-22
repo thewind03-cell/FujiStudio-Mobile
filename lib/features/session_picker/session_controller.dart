@@ -5,6 +5,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/schema/action_proposal.dart';
+import '../../core/schema/collage_spec.dart';
 import '../../core/schema/cull_result.dart';
 import '../../core/schema/edit_recipe.dart';
 import '../../core/schema/session_document.dart';
@@ -174,6 +176,18 @@ final class SessionController extends StateNotifier<SessionState> {
     return state.itemById(itemId)?.editRecipe;
   }
 
+  /// Safely reads the [SessionItem] for [itemId] without exposing
+  /// protected `StateNotifier.state` outside this controller.
+  SessionItem? sessionItemById(String itemId) {
+    return state.itemById(itemId);
+  }
+
+  /// Safely reads the [PairedAsset] for [itemId] without exposing
+  /// protected `StateNotifier.state` outside this controller.
+  PairedAsset? pairedAssetForItem(String itemId) {
+    return state.pairedAssetsById[itemId];
+  }
+
   /// Opens [album], fetches all media descriptors via [StorageGateway], pairs
   /// `.JPG`/`.RAF` files, performs 3-way reconciliation with any saved
   /// `.fujistudio_session.json`, and pins the album's proxy cache keys.
@@ -322,45 +336,14 @@ final class SessionController extends StateNotifier<SessionState> {
       state.activeFilter,
     );
 
-    final nextState = state.copyWith(
-      document: updatedDoc,
-      visibleItemIds: visibleIds,
-      isSaving: true,
-      hasPendingChanges: true,
-    );
-    state = nextState;
-
-    final gen = ++_saveGeneration;
-    unawaited(
-      _sessionStore
-          .scheduleSave(
-            albumKey,
-            updatedDoc,
-            recentEntry: _buildRecentEntry(
-              album: album,
-              albumKey: albumKey,
-              state: nextState,
-            ),
-          )
-          .then((_) {
-            if (mounted && gen == _saveGeneration) {
-              state = state.copyWith(
-                isSaving: false,
-                hasPendingChanges: false,
-                lastSavedAt: DateTime.now(),
-              );
-            }
-          }),
-    );
+    _persistUpdatedDocument(updatedDoc, visibleIds: visibleIds);
   }
 
   /// Updates only `editRecipe` for [itemId], preserving 100% of `cullResult`,
   /// `actionProposals`, and Desktop v2.4.2 `unknownFields`.
   void updateItemEditRecipe(String itemId, EditRecipe updatedRecipe) {
     final doc = state.document;
-    final album = state.album;
-    final albumKey = state.albumKey;
-    if (doc == null || album == null || albumKey == null) return;
+    if (doc == null) return;
 
     var changed = false;
     final updatedItems = <SessionItem>[];
@@ -381,8 +364,78 @@ final class SessionController extends StateNotifier<SessionState> {
       items: updatedItems,
     );
 
+    _persistUpdatedDocument(updatedDoc);
+  }
+
+  /// Inserts or updates an [ActionProposal] at the root `action_proposals`
+  /// list of [SessionDocument], preserving all `unknownFields`.
+  void recordActionProposal(ActionProposal proposal) {
+    final doc = state.document;
+    if (doc == null) return;
+
+    final updatedProposals = <ActionProposal>[];
+    var replaced = false;
+    for (final existing in doc.actionProposals) {
+      if (existing.proposalId == proposal.proposalId) {
+        updatedProposals.add(proposal);
+        replaced = true;
+      } else {
+        updatedProposals.add(existing);
+      }
+    }
+    if (!replaced) {
+      updatedProposals.add(proposal);
+    }
+
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final updatedDoc = doc.copyWith(
+      updatedAt: nowIso,
+      actionProposals: updatedProposals,
+    );
+
+    _persistUpdatedDocument(updatedDoc);
+  }
+
+  /// Inserts or updates a [CollageSpec] in `SessionDocument.collages`,
+  /// preserving all `unknownFields`.
+  void saveCollageSpec(CollageSpec collage) {
+    final doc = state.document;
+    if (doc == null) return;
+
+    final updatedCollages = <CollageSpec>[];
+    var replaced = false;
+    for (final existing in doc.collages) {
+      if (existing.collageId == collage.collageId) {
+        updatedCollages.add(collage);
+        replaced = true;
+      } else {
+        updatedCollages.add(existing);
+      }
+    }
+    if (!replaced) {
+      updatedCollages.add(collage);
+    }
+
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final updatedDoc = doc.copyWith(
+      updatedAt: nowIso,
+      collages: updatedCollages,
+    );
+
+    _persistUpdatedDocument(updatedDoc);
+  }
+
+  void _persistUpdatedDocument(
+    SessionDocument updatedDoc, {
+    List<String>? visibleIds,
+  }) {
+    final album = state.album;
+    final albumKey = state.albumKey;
+    if (album == null || albumKey == null) return;
+
     final nextState = state.copyWith(
       document: updatedDoc,
+      visibleItemIds: visibleIds,
       isSaving: true,
       hasPendingChanges: true,
     );

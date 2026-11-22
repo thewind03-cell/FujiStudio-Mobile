@@ -137,6 +137,155 @@ final class JpegInspectResult {
   double get elapsedMilliseconds => elapsedMicroseconds / 1000.0;
 }
 
+/// Normalized `[0..1]` crop box in post-rotation inscribed image space.
+final class NormCropBoxData {
+  const NormCropBoxData({
+    required this.left,
+    required this.top,
+    required this.right,
+    required this.bottom,
+  });
+
+  static const NormCropBoxData full = NormCropBoxData(
+    left: 0.0,
+    top: 0.0,
+    right: 1.0,
+    bottom: 1.0,
+  );
+
+  final double left;
+  final double top;
+  final double right;
+  final double bottom;
+}
+
+/// Result returned by [NativeWorker.clampCrop].
+final class ClampedCropResult {
+  const ClampedCropResult({
+    required this.statusCode,
+    required this.elapsedMicroseconds,
+    required this.clampedBox,
+    required this.pixelWidth,
+    required this.pixelHeight,
+  });
+
+  final int statusCode;
+  final int elapsedMicroseconds;
+  final NormCropBoxData clampedBox;
+  final int pixelWidth;
+  final int pixelHeight;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+}
+
+/// Geometry transform parameters passed across [NativeWorker].
+final class GeometryNativeParams {
+  const GeometryNativeParams({
+    required this.rotationDeg,
+    required this.aspectPreset,
+    required this.cropBox,
+    this.highQuality = true,
+  });
+
+  final double rotationDeg;
+  final int aspectPreset;
+  final NormCropBoxData cropBox;
+  final bool highQuality;
+}
+
+/// Result returned by [NativeWorker.analyzeGeometryOnSurface].
+final class GeometryProposalNative {
+  const GeometryProposalNative({
+    required this.statusCode,
+    required this.elapsedMicroseconds,
+    required this.suggestedRotationDeg,
+    required this.horizonConfidence,
+    required this.suggestedCropBox,
+    required this.cropConfidence,
+    required this.saliencyCx,
+    required this.saliencyCy,
+    required this.hasHorizonLine,
+    required this.targetAspectPreset,
+  });
+
+  final int statusCode;
+  final int elapsedMicroseconds;
+  final double suggestedRotationDeg;
+  final double horizonConfidence;
+  final NormCropBoxData suggestedCropBox;
+  final double cropConfidence;
+  final double saliencyCx;
+  final double saliencyCy;
+  final bool hasHorizonLine;
+  final int targetAspectPreset;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+}
+
+/// Single RGBA slot payload sent to [NativeWorker.renderCollage].
+final class CollageSlotInputData {
+  const CollageSlotInputData({
+    required this.rgbaBytes,
+    required this.width,
+    required this.height,
+    this.panX = 0.0,
+    this.panY = 0.0,
+    this.zoom = 1.0,
+  });
+
+  final Uint8List rgbaBytes;
+  final int width;
+  final int height;
+  final double panX;
+  final double panY;
+  final double zoom;
+}
+
+/// Canvas configuration sent to [NativeWorker.renderCollage].
+final class CollageNativeConfig {
+  const CollageNativeConfig({
+    required this.templateId,
+    required this.canvasWidth,
+    required this.canvasHeight,
+    required this.gutterPx,
+    required this.outerMarginPx,
+    required this.bgR,
+    required this.bgG,
+    required this.bgB,
+    this.bgA = 255,
+  });
+
+  final int templateId;
+  final int canvasWidth;
+  final int canvasHeight;
+  final int gutterPx;
+  final int outerMarginPx;
+  final int bgR;
+  final int bgG;
+  final int bgB;
+  final int bgA;
+}
+
+/// Result returned by [NativeWorker.renderCollage].
+final class CollageRenderResult {
+  const CollageRenderResult({
+    required this.statusCode,
+    required this.renderTimeMicros,
+    required this.width,
+    required this.height,
+    this.rgbaBytes,
+  });
+
+  final int statusCode;
+  final int renderTimeMicros;
+  final int width;
+  final int height;
+  final Uint8List? rgbaBytes;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+  double get renderTimeMs => renderTimeMicros / 1000.0;
+}
+
 /// Long-lived background Isolate bridging Dart requests to the stateless
 /// C++20 FujiStudio core over `dart:ffi`.
 ///
@@ -401,6 +550,89 @@ final class NativeWorker {
     );
   }
 
+  /// Clamps [requestedBox] inside the zero-black-corners inscribed space via
+  /// `fs_geometry_clamp_crop`.
+  Future<ClampedCropResult> clampCrop({
+    required int srcWidth,
+    required int srcHeight,
+    required double rotationDeg,
+    required int aspectPreset,
+    required NormCropBoxData requestedBox,
+  }) async {
+    return _sendRequest<ClampedCropResult>(
+      (id) => _ClampCropRequest(
+        id: id,
+        srcWidth: srcWidth,
+        srcHeight: srcHeight,
+        rotationDeg: rotationDeg,
+        aspectPreset: aspectPreset,
+        requestedBox: requestedBox,
+      ),
+    );
+  }
+
+  /// Runs Auto-Horizon + AI Saliency Crop directly on an open resident
+  /// [surfaceId] without re-allocating or transferring pixels.
+  Future<GeometryProposalNative> analyzeGeometryOnSurface({
+    required int surfaceId,
+    required int targetAspectPreset,
+  }) async {
+    return _sendRequest<GeometryProposalNative>(
+      (id) => _AnalyzeGeometrySurfaceRequest(
+        id: id,
+        surfaceId: surfaceId,
+        targetAspectPreset: targetAspectPreset,
+      ),
+    );
+  }
+
+  /// Renders rotated and cropped RGBA pixels directly from an open resident
+  /// [surfaceId] via `fs_geometry_render_rgba_into`.
+  Future<StudioRenderResult> renderGeometryOnSurface({
+    required int surfaceId,
+    required GeometryNativeParams params,
+    required int outWidth,
+    required int outHeight,
+  }) async {
+    return _sendRequest<StudioRenderResult>(
+      (id) => _RenderGeometrySurfaceRequest(
+        id: id,
+        surfaceId: surfaceId,
+        params: params,
+        outWidth: outWidth,
+        outHeight: outHeight,
+      ),
+    );
+  }
+
+  /// Stitches 2-4 slot images into a story collage canvas via
+  /// `fs_collage_render_rgba_into`.
+  Future<CollageRenderResult> renderCollage({
+    required List<CollageSlotInputData> slots,
+    required CollageNativeConfig config,
+  }) async {
+    final transferredSlots = slots
+        .map<_CollageSlotTransfer>(
+          (s) => _CollageSlotTransfer(
+            rgba: TransferableTypedData.fromList(<Uint8List>[s.rgbaBytes]),
+            byteLength: s.rgbaBytes.length,
+            width: s.width,
+            height: s.height,
+            panX: s.panX,
+            panY: s.panY,
+            zoom: s.zoom,
+          ),
+        )
+        .toList(growable: false);
+    return _sendRequest<CollageRenderResult>(
+      (id) => _RenderCollageRequest(
+        id: id,
+        slots: transferredSlots,
+        config: config,
+      ),
+    );
+  }
+
   /// Idempotently shuts down the background Isolate and releases all ports.
   ///
   /// Concurrent or repeated calls return the exact same [Future] and complete
@@ -497,6 +729,20 @@ final class NativeWorker {
       final bytes = payload.transferable?.materialize().asUint8List();
       completer.complete(
         StudioRenderResult(
+          statusCode: payload.statusCode,
+          renderTimeMicros: payload.renderTimeMicros,
+          width: payload.width,
+          height: payload.height,
+          rgbaBytes: bytes,
+        ),
+      );
+      return;
+    }
+
+    if (payload is _CollageRenderPayload) {
+      final bytes = payload.transferable?.materialize().asUint8List();
+      completer.complete(
+        CollageRenderResult(
           statusCode: payload.statusCode,
           renderTimeMicros: payload.renderTimeMicros,
           width: payload.width,
@@ -666,6 +912,62 @@ void _workerEntryPoint(_WorkerBootstrap bootstrap) {
           final surface = studioSurfaces.remove(message.surfaceId);
           surface?.dispose();
           responsePort?.send(_WorkerResponse(id: message.id, payload: null));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _ClampCropRequest) {
+        try {
+          final result = _executeClampCrop(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _AnalyzeGeometrySurfaceRequest) {
+        try {
+          final result = _executeAnalyzeGeometrySurface(
+            bindings,
+            message,
+            studioSurfaces,
+          );
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _RenderGeometrySurfaceRequest) {
+        try {
+          final payload = _executeRenderGeometrySurface(
+            bindings,
+            message,
+            studioSurfaces,
+          );
+          responsePort?.send(_WorkerResponse(id: message.id, payload: payload));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _RenderCollageRequest) {
+        try {
+          final payload = _executeRenderCollage(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: payload));
         } catch (error) {
           responsePort?.send(
             _WorkerResponse(id: message.id, error: error.toString()),
@@ -1081,6 +1383,348 @@ DnaRescueSuggestionResult _executeAnalyzeStudioSurface(
   );
 }
 
+int? _validateRgbaDimensions(int width, int height) {
+  const int maxInt32 = 0x7FFFFFFF;
+  const int maxImageDim = FS_MAX_IMAGE_DIMENSION;
+  if (width <= 0 || height <= 0) {
+    return FsStatusCode.FS_ERR_INVALID_DIMENSIONS.value;
+  }
+  if (width > maxInt32 ||
+      height > maxInt32 ||
+      width > maxImageDim ||
+      height > maxImageDim ||
+      width > (maxInt32 ~/ 4) ~/ height) {
+    return FsStatusCode.FS_ERR_OVERFLOW.value;
+  }
+  return null;
+}
+
+ClampedCropResult _executeClampCrop(
+  FujiStudioBindings bindings,
+  _ClampCropRequest request,
+) {
+  final sw = Stopwatch()..start();
+  final dimErr = _validateRgbaDimensions(request.srcWidth, request.srcHeight);
+  if (dimErr != null) {
+    sw.stop();
+    return ClampedCropResult(
+      statusCode: dimErr,
+      elapsedMicroseconds: sw.elapsedMicroseconds,
+      clampedBox: NormCropBoxData.full,
+      pixelWidth: 0,
+      pixelHeight: 0,
+    );
+  }
+
+  ffi.Pointer<FsNormCropBox> reqPtr = ffi.nullptr;
+  ffi.Pointer<FsNormCropBox> outPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Int32> outWPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Int32> outHPtr = ffi.nullptr;
+  try {
+    reqPtr = calloc<FsNormCropBox>()
+      ..ref.left = request.requestedBox.left
+      ..ref.top = request.requestedBox.top
+      ..ref.right = request.requestedBox.right
+      ..ref.bottom = request.requestedBox.bottom;
+    outPtr = calloc<FsNormCropBox>();
+    outWPtr = calloc<ffi.Int32>();
+    outHPtr = calloc<ffi.Int32>();
+
+    final rc = bindings.fs_geometry_clamp_crop(
+      request.srcWidth,
+      request.srcHeight,
+      request.rotationDeg,
+      request.aspectPreset,
+      reqPtr,
+      outPtr,
+      outWPtr,
+      outHPtr,
+    );
+    sw.stop();
+
+    final clamped = outPtr.ref;
+    return ClampedCropResult(
+      statusCode: rc,
+      elapsedMicroseconds: sw.elapsedMicroseconds,
+      clampedBox: NormCropBoxData(
+        left: clamped.left,
+        top: clamped.top,
+        right: clamped.right,
+        bottom: clamped.bottom,
+      ),
+      pixelWidth: outWPtr.value,
+      pixelHeight: outHPtr.value,
+    );
+  } finally {
+    if (outHPtr != ffi.nullptr) calloc.free(outHPtr);
+    if (outWPtr != ffi.nullptr) calloc.free(outWPtr);
+    if (outPtr != ffi.nullptr) calloc.free(outPtr);
+    if (reqPtr != ffi.nullptr) calloc.free(reqPtr);
+  }
+}
+
+GeometryProposalNative _executeAnalyzeGeometrySurface(
+  FujiStudioBindings bindings,
+  _AnalyzeGeometrySurfaceRequest request,
+  Map<int, _StudioSurface> studioSurfaces,
+) {
+  final surface = studioSurfaces[request.surfaceId];
+  if (surface == null) {
+    throw StateError('Studio surface ${request.surfaceId} is not open.');
+  }
+
+  ffi.Pointer<FsGeometryProposal> propPtr = ffi.nullptr;
+  try {
+    propPtr = calloc<FsGeometryProposal>();
+    final sw = Stopwatch()..start();
+    final rc = bindings.fs_geometry_analyze_rgba(
+      surface.srcPtr,
+      surface.byteLen,
+      surface.width,
+      surface.height,
+      request.targetAspectPreset,
+      propPtr,
+    );
+    sw.stop();
+
+    final p = propPtr.ref;
+    return GeometryProposalNative(
+      statusCode: rc,
+      elapsedMicroseconds: sw.elapsedMicroseconds,
+      suggestedRotationDeg: p.suggested_rotation_deg,
+      horizonConfidence: p.horizon_confidence,
+      suggestedCropBox: NormCropBoxData(
+        left: p.suggested_crop_box.left,
+        top: p.suggested_crop_box.top,
+        right: p.suggested_crop_box.right,
+        bottom: p.suggested_crop_box.bottom,
+      ),
+      cropConfidence: p.crop_confidence,
+      saliencyCx: p.saliency_cx,
+      saliencyCy: p.saliency_cy,
+      hasHorizonLine: p.has_horizon_line != 0,
+      targetAspectPreset: p.target_aspect_preset,
+    );
+  } finally {
+    if (propPtr != ffi.nullptr) calloc.free(propPtr);
+  }
+}
+
+_StudioRenderPayload _executeRenderGeometrySurface(
+  FujiStudioBindings bindings,
+  _RenderGeometrySurfaceRequest request,
+  Map<int, _StudioSurface> studioSurfaces,
+) {
+  final surface = studioSurfaces[request.surfaceId];
+  if (surface == null) {
+    throw StateError('Studio surface ${request.surfaceId} is not open.');
+  }
+
+  final sw = Stopwatch()..start();
+  final dimErr = _validateRgbaDimensions(request.outWidth, request.outHeight);
+  if (dimErr != null) {
+    sw.stop();
+    return _StudioRenderPayload(
+      statusCode: dimErr,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: 0,
+      height: 0,
+      transferable: null,
+    );
+  }
+
+  final outByteLen = request.outWidth * request.outHeight * 4;
+  ffi.Pointer<FsGeometryParams> paramsPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> outPtr = ffi.nullptr;
+
+  try {
+    paramsPtr = calloc<FsGeometryParams>()
+      ..ref.rotation_deg = request.params.rotationDeg
+      ..ref.aspect_preset = request.params.aspectPreset
+      ..ref.crop_box.left = request.params.cropBox.left
+      ..ref.crop_box.top = request.params.cropBox.top
+      ..ref.crop_box.right = request.params.cropBox.right
+      ..ref.crop_box.bottom = request.params.cropBox.bottom
+      ..ref.high_quality = request.params.highQuality ? 1 : 0;
+
+    outPtr = calloc<ffi.Uint8>(outByteLen);
+    final rc = bindings.fs_geometry_render_rgba_into(
+      surface.srcPtr,
+      surface.byteLen,
+      surface.width,
+      surface.height,
+      paramsPtr,
+      outPtr,
+      outByteLen,
+      request.outWidth,
+      request.outHeight,
+    );
+    sw.stop();
+
+    if (rc != FsStatusCode.FS_OK.value) {
+      return _StudioRenderPayload(
+        statusCode: rc,
+        renderTimeMicros: sw.elapsedMicroseconds,
+        width: request.outWidth,
+        height: request.outHeight,
+        transferable: null,
+      );
+    }
+
+    final transferable = TransferableTypedData.fromList(<Uint8List>[
+      outPtr.asTypedList(outByteLen),
+    ]);
+    return _StudioRenderPayload(
+      statusCode: rc,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: request.outWidth,
+      height: request.outHeight,
+      transferable: transferable,
+    );
+  } finally {
+    if (outPtr != ffi.nullptr) calloc.free(outPtr);
+    if (paramsPtr != ffi.nullptr) calloc.free(paramsPtr);
+  }
+}
+
+_CollageRenderPayload _executeRenderCollage(
+  FujiStudioBindings bindings,
+  _RenderCollageRequest request,
+) {
+  final sw = Stopwatch()..start();
+  final slots = request.slots;
+  final cfg = request.config;
+
+  if (slots.length < 2 || slots.length > 4) {
+    sw.stop();
+    return _CollageRenderPayload(
+      statusCode: FsStatusCode.FS_ERR_COLLAGE_INVALID_SLOTS.value,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: cfg.canvasWidth,
+      height: cfg.canvasHeight,
+      transferable: null,
+    );
+  }
+
+  final canvasDimErr =
+      _validateRgbaDimensions(cfg.canvasWidth, cfg.canvasHeight);
+  if (canvasDimErr != null) {
+    sw.stop();
+    return _CollageRenderPayload(
+      statusCode: canvasDimErr,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: cfg.canvasWidth,
+      height: cfg.canvasHeight,
+      transferable: null,
+    );
+  }
+
+  for (final slot in slots) {
+    final slotDimErr = _validateRgbaDimensions(slot.width, slot.height);
+    if (slotDimErr != null) {
+      sw.stop();
+      return _CollageRenderPayload(
+        statusCode: slotDimErr,
+        renderTimeMicros: sw.elapsedMicroseconds,
+        width: cfg.canvasWidth,
+        height: cfg.canvasHeight,
+        transferable: null,
+      );
+    }
+    final expectedSlotBytes = slot.width * slot.height * 4;
+    if (slot.byteLength < expectedSlotBytes) {
+      sw.stop();
+      return _CollageRenderPayload(
+        statusCode: FsStatusCode.FS_ERR_INVALID_DIMENSIONS.value,
+        renderTimeMicros: sw.elapsedMicroseconds,
+        width: cfg.canvasWidth,
+        height: cfg.canvasHeight,
+        transferable: null,
+      );
+    }
+  }
+
+  final canvasByteLen = cfg.canvasWidth * cfg.canvasHeight * 4;
+  final slotPtrs = <ffi.Pointer<ffi.Uint8>>[];
+  ffi.Pointer<FsCollageInputSlot> slotsArray = ffi.nullptr;
+  ffi.Pointer<FsCollageConfig> configPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> outPtr = ffi.nullptr;
+
+  try {
+    slotsArray = calloc<FsCollageInputSlot>(slots.length);
+    for (var i = 0; i < slots.length; i++) {
+      final slot = slots[i];
+      final bytes = slot.rgba.materialize().asUint8List();
+      final allocLen = bytes.isEmpty ? 1 : bytes.length;
+      final ptr = calloc<ffi.Uint8>(allocLen);
+      slotPtrs.add(ptr);
+      if (bytes.isNotEmpty) {
+        ptr.asTypedList(bytes.length).setAll(0, bytes);
+      }
+
+      slotsArray[i]
+        ..rgba = ptr
+        ..rgba_len = bytes.length
+        ..width = slot.width
+        ..height = slot.height
+        ..pan_x = slot.panX
+        ..pan_y = slot.panY
+        ..zoom = slot.zoom
+        ..reserved = 0;
+    }
+
+    configPtr = calloc<FsCollageConfig>()
+      ..ref.template_id = cfg.templateId
+      ..ref.canvas_width = cfg.canvasWidth
+      ..ref.canvas_height = cfg.canvasHeight
+      ..ref.gutter_px = cfg.gutterPx
+      ..ref.outer_margin_px = cfg.outerMarginPx
+      ..ref.bg_r = cfg.bgR
+      ..ref.bg_g = cfg.bgG
+      ..ref.bg_b = cfg.bgB
+      ..ref.bg_a = cfg.bgA;
+
+    outPtr = calloc<ffi.Uint8>(canvasByteLen);
+
+    final rc = bindings.fs_collage_render_rgba_into(
+      slotsArray,
+      slots.length,
+      configPtr,
+      outPtr,
+      canvasByteLen,
+    );
+    sw.stop();
+
+    if (rc != FsStatusCode.FS_OK.value) {
+      return _CollageRenderPayload(
+        statusCode: rc,
+        renderTimeMicros: sw.elapsedMicroseconds,
+        width: cfg.canvasWidth,
+        height: cfg.canvasHeight,
+        transferable: null,
+      );
+    }
+
+    final transferable = TransferableTypedData.fromList(<Uint8List>[
+      outPtr.asTypedList(canvasByteLen),
+    ]);
+    return _CollageRenderPayload(
+      statusCode: rc,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: cfg.canvasWidth,
+      height: cfg.canvasHeight,
+      transferable: transferable,
+    );
+  } finally {
+    if (outPtr != ffi.nullptr) calloc.free(outPtr);
+    if (configPtr != ffi.nullptr) calloc.free(configPtr);
+    if (slotsArray != ffi.nullptr) calloc.free(slotsArray);
+    for (final ptr in slotPtrs) {
+      if (ptr != ffi.nullptr) calloc.free(ptr);
+    }
+  }
+}
+
 final class _StudioSurface {
   _StudioSurface({
     required this.width,
@@ -1239,6 +1883,80 @@ final class _CloseStudioSurfaceRequest extends _WorkerRequest {
   final int surfaceId;
 }
 
+final class _ClampCropRequest extends _WorkerRequest {
+  const _ClampCropRequest({
+    required super.id,
+    required this.srcWidth,
+    required this.srcHeight,
+    required this.rotationDeg,
+    required this.aspectPreset,
+    required this.requestedBox,
+  });
+
+  final int srcWidth;
+  final int srcHeight;
+  final double rotationDeg;
+  final int aspectPreset;
+  final NormCropBoxData requestedBox;
+}
+
+final class _AnalyzeGeometrySurfaceRequest extends _WorkerRequest {
+  const _AnalyzeGeometrySurfaceRequest({
+    required super.id,
+    required this.surfaceId,
+    required this.targetAspectPreset,
+  });
+
+  final int surfaceId;
+  final int targetAspectPreset;
+}
+
+final class _RenderGeometrySurfaceRequest extends _WorkerRequest {
+  const _RenderGeometrySurfaceRequest({
+    required super.id,
+    required this.surfaceId,
+    required this.params,
+    required this.outWidth,
+    required this.outHeight,
+  });
+
+  final int surfaceId;
+  final GeometryNativeParams params;
+  final int outWidth;
+  final int outHeight;
+}
+
+final class _CollageSlotTransfer {
+  const _CollageSlotTransfer({
+    required this.rgba,
+    required this.byteLength,
+    required this.width,
+    required this.height,
+    required this.panX,
+    required this.panY,
+    required this.zoom,
+  });
+
+  final TransferableTypedData rgba;
+  final int byteLength;
+  final int width;
+  final int height;
+  final double panX;
+  final double panY;
+  final double zoom;
+}
+
+final class _RenderCollageRequest extends _WorkerRequest {
+  const _RenderCollageRequest({
+    required super.id,
+    required this.slots,
+    required this.config,
+  });
+
+  final List<_CollageSlotTransfer> slots;
+  final CollageNativeConfig config;
+}
+
 final class _ShutdownRequest {
   const _ShutdownRequest();
 }
@@ -1269,6 +1987,22 @@ final class _InvertRgbaPayload {
 
 final class _StudioRenderPayload {
   const _StudioRenderPayload({
+    required this.statusCode,
+    required this.renderTimeMicros,
+    required this.width,
+    required this.height,
+    required this.transferable,
+  });
+
+  final int statusCode;
+  final int renderTimeMicros;
+  final int width;
+  final int height;
+  final TransferableTypedData? transferable;
+}
+
+final class _CollageRenderPayload {
+  const _CollageRenderPayload({
     required this.statusCode,
     required this.renderTimeMicros,
     required this.width,

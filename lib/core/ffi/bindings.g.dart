@@ -23,6 +23,46 @@ class FujiStudioBindings {
     ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName) lookup,
   ) : _lookup = lookup;
 
+  /// Stitches 2-4 RGBA8888 slot images into a caller-allocated story collage canvas.
+  int fs_collage_render_rgba_into(
+    ffi.Pointer<FsCollageInputSlot> slots,
+    int slot_count,
+    ffi.Pointer<FsCollageConfig> config,
+    ffi.Pointer<ffi.Uint8> out_canvas_rgba,
+    int out_canvas_len,
+  ) {
+    return _fs_collage_render_rgba_into(
+      slots,
+      slot_count,
+      config,
+      out_canvas_rgba,
+      out_canvas_len,
+    );
+  }
+
+  late final _fs_collage_render_rgba_intoPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<FsCollageInputSlot>,
+            ffi.Int32,
+            ffi.Pointer<FsCollageConfig>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+          )
+        >
+      >('fs_collage_render_rgba_into');
+  late final _fs_collage_render_rgba_into = _fs_collage_render_rgba_intoPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<FsCollageInputSlot>,
+          int,
+          ffi.Pointer<FsCollageConfig>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >();
+
   /// Returns the static null-terminated version string of the FujiStudio C++ core.
   /// Returned pointer has static storage duration; caller must NOT free it.
   ffi.Pointer<ffi.Char> fs_core_version() {
@@ -137,6 +177,161 @@ class FujiStudioBindings {
       );
   late final _fs_free_buffer = _fs_free_bufferPtr
       .asFunction<void Function(ffi.Pointer<ffi.Uint8>)>();
+
+  /// Analyzes an RGBA8888 buffer for automatic horizon leveling and saliency-based
+  /// social aspect cropping.
+  int fs_geometry_analyze_rgba(
+    ffi.Pointer<ffi.Uint8> input_rgba,
+    int input_len,
+    int width,
+    int height,
+    int target_aspect_preset,
+    ffi.Pointer<FsGeometryProposal> out_proposal,
+  ) {
+    return _fs_geometry_analyze_rgba(
+      input_rgba,
+      input_len,
+      width,
+      height,
+      target_aspect_preset,
+      out_proposal,
+    );
+  }
+
+  late final _fs_geometry_analyze_rgbaPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<FsGeometryProposal>,
+          )
+        >
+      >('fs_geometry_analyze_rgba');
+  late final _fs_geometry_analyze_rgba = _fs_geometry_analyze_rgbaPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          int,
+          int,
+          int,
+          ffi.Pointer<FsGeometryProposal>,
+        )
+      >();
+
+  /// Clamps a normalized crop box inside the zero-black-corners inscribed space
+  /// for the given source dimensions, rotation angle, and aspect preset.
+  int fs_geometry_clamp_crop(
+    int src_width,
+    int src_height,
+    double rotation_deg,
+    int aspect_preset,
+    ffi.Pointer<FsNormCropBox> requested_box,
+    ffi.Pointer<FsNormCropBox> out_clamped_box,
+    ffi.Pointer<ffi.Int32> out_pixel_width,
+    ffi.Pointer<ffi.Int32> out_pixel_height,
+  ) {
+    return _fs_geometry_clamp_crop(
+      src_width,
+      src_height,
+      rotation_deg,
+      aspect_preset,
+      requested_box,
+      out_clamped_box,
+      out_pixel_width,
+      out_pixel_height,
+    );
+  }
+
+  late final _fs_geometry_clamp_cropPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Float,
+            ffi.Int32,
+            ffi.Pointer<FsNormCropBox>,
+            ffi.Pointer<FsNormCropBox>,
+            ffi.Pointer<ffi.Int32>,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('fs_geometry_clamp_crop');
+  late final _fs_geometry_clamp_crop = _fs_geometry_clamp_cropPtr
+      .asFunction<
+        int Function(
+          int,
+          int,
+          double,
+          int,
+          ffi.Pointer<FsNormCropBox>,
+          ffi.Pointer<FsNormCropBox>,
+          ffi.Pointer<ffi.Int32>,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  /// Renders rotated and cropped RGBA8888 output into caller-allocated `out_rgba`.
+  /// In-place aliasing (`out_rgba == input_rgba`) is rejected with FS_ERR_INVALID_PARAMS.
+  int fs_geometry_render_rgba_into(
+    ffi.Pointer<ffi.Uint8> input_rgba,
+    int input_len,
+    int src_width,
+    int src_height,
+    ffi.Pointer<FsGeometryParams> params,
+    ffi.Pointer<ffi.Uint8> out_rgba,
+    int out_len,
+    int out_width,
+    int out_height,
+  ) {
+    return _fs_geometry_render_rgba_into(
+      input_rgba,
+      input_len,
+      src_width,
+      src_height,
+      params,
+      out_rgba,
+      out_len,
+      out_width,
+      out_height,
+    );
+  }
+
+  late final _fs_geometry_render_rgba_intoPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<FsGeometryParams>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+          )
+        >
+      >('fs_geometry_render_rgba_into');
+  late final _fs_geometry_render_rgba_into = _fs_geometry_render_rgba_intoPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          int,
+          int,
+          ffi.Pointer<FsGeometryParams>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          int,
+          int,
+        )
+      >();
 
   /// Smoke-test RGBA8888 pixel inverter: allocates an output buffer, inverts R/G/B
   /// channels (255 - c) while preserving Alpha unchanged.
@@ -347,6 +542,144 @@ const int FS_RAF_MIN_HEADER_BYTES = 92;
 
 const int FS_RAF_MIN_JPEG_BYTES = 128;
 
+enum FsAspectPreset {
+  FS_ASPECT_ORIGINAL(0),
+  FS_ASPECT_4_5(1),
+  FS_ASPECT_1_1(2),
+  FS_ASPECT_3_2(3),
+  FS_ASPECT_9_16(4);
+
+  final int value;
+  const FsAspectPreset(this.value);
+
+  static FsAspectPreset fromValue(int value) => switch (value) {
+    0 => FS_ASPECT_ORIGINAL,
+    1 => FS_ASPECT_4_5,
+    2 => FS_ASPECT_1_1,
+    3 => FS_ASPECT_3_2,
+    4 => FS_ASPECT_9_16,
+    _ => throw ArgumentError('Unknown value for FsAspectPreset: $value'),
+  };
+}
+
+final class FsCollageConfig extends ffi.Struct {
+  @ffi.Int32()
+  external int template_id;
+
+  @ffi.Int32()
+  external int canvas_width;
+
+  @ffi.Int32()
+  external int canvas_height;
+
+  @ffi.Int32()
+  external int gutter_px;
+
+  @ffi.Int32()
+  external int outer_margin_px;
+
+  @ffi.Uint8()
+  external int bg_r;
+
+  @ffi.Uint8()
+  external int bg_g;
+
+  @ffi.Uint8()
+  external int bg_b;
+
+  @ffi.Uint8()
+  external int bg_a;
+
+  static ffi.Pointer<FsCollageConfig> $allocate(
+    ffi.Allocator $allocator, {
+    required int template_id,
+    required int canvas_width,
+    required int canvas_height,
+    required int gutter_px,
+    required int outer_margin_px,
+    required int bg_r,
+    required int bg_g,
+    required int bg_b,
+    required int bg_a,
+  }) => $allocator<FsCollageConfig>()
+    ..ref.template_id = template_id
+    ..ref.canvas_width = canvas_width
+    ..ref.canvas_height = canvas_height
+    ..ref.gutter_px = gutter_px
+    ..ref.outer_margin_px = outer_margin_px
+    ..ref.bg_r = bg_r
+    ..ref.bg_g = bg_g
+    ..ref.bg_b = bg_b
+    ..ref.bg_a = bg_a;
+}
+
+final class FsCollageInputSlot extends ffi.Struct {
+  external ffi.Pointer<ffi.Uint8> rgba;
+
+  @ffi.Size()
+  external int rgba_len;
+
+  @ffi.Int32()
+  external int width;
+
+  @ffi.Int32()
+  external int height;
+
+  @ffi.Float()
+  external double pan_x;
+
+  @ffi.Float()
+  external double pan_y;
+
+  @ffi.Float()
+  external double zoom;
+
+  @ffi.Int32()
+  external int reserved;
+
+  static ffi.Pointer<FsCollageInputSlot> $allocate(
+    ffi.Allocator $allocator, {
+    required ffi.Pointer<ffi.Uint8> rgba,
+    required int rgba_len,
+    required int width,
+    required int height,
+    required double pan_x,
+    required double pan_y,
+    required double zoom,
+    required int reserved,
+  }) => $allocator<FsCollageInputSlot>()
+    ..ref.rgba = rgba
+    ..ref.rgba_len = rgba_len
+    ..ref.width = width
+    ..ref.height = height
+    ..ref.pan_x = pan_x
+    ..ref.pan_y = pan_y
+    ..ref.zoom = zoom
+    ..ref.reserved = reserved;
+}
+
+enum FsCollageTemplate {
+  FS_COLLAGE_SPLIT_2_V(0),
+  FS_COLLAGE_SPLIT_2_H(1),
+  FS_COLLAGE_GRID_3_STRIP(2),
+  FS_COLLAGE_GRID_3_TOP(3),
+  FS_COLLAGE_GRID_3_LEFT(4),
+  FS_COLLAGE_GRID_4_EVEN(5);
+
+  final int value;
+  const FsCollageTemplate(this.value);
+
+  static FsCollageTemplate fromValue(int value) => switch (value) {
+    0 => FS_COLLAGE_SPLIT_2_V,
+    1 => FS_COLLAGE_SPLIT_2_H,
+    2 => FS_COLLAGE_GRID_3_STRIP,
+    3 => FS_COLLAGE_GRID_3_TOP,
+    4 => FS_COLLAGE_GRID_3_LEFT,
+    5 => FS_COLLAGE_GRID_4_EVEN,
+    _ => throw ArgumentError('Unknown value for FsCollageTemplate: $value'),
+  };
+}
+
 enum FsDnaRescueMode {
   FS_DNA_MODE_SOOC_SAFE(0),
   FS_DNA_MODE_DEEP_RESCUE(1);
@@ -456,6 +789,70 @@ enum FsExifOrientation {
   };
 }
 
+final class FsGeometryParams extends ffi.Struct {
+  @ffi.Float()
+  external double rotation_deg;
+
+  @ffi.Int32()
+  external int aspect_preset;
+
+  external FsNormCropBox crop_box;
+
+  @ffi.Int32()
+  external int high_quality;
+}
+
+final class FsGeometryProposal extends ffi.Struct {
+  @ffi.Float()
+  external double suggested_rotation_deg;
+
+  @ffi.Float()
+  external double horizon_confidence;
+
+  external FsNormCropBox suggested_crop_box;
+
+  @ffi.Float()
+  external double crop_confidence;
+
+  @ffi.Float()
+  external double saliency_cx;
+
+  @ffi.Float()
+  external double saliency_cy;
+
+  @ffi.Int32()
+  external int has_horizon_line;
+
+  @ffi.Int32()
+  external int target_aspect_preset;
+}
+
+final class FsNormCropBox extends ffi.Struct {
+  @ffi.Float()
+  external double left;
+
+  @ffi.Float()
+  external double top;
+
+  @ffi.Float()
+  external double right;
+
+  @ffi.Float()
+  external double bottom;
+
+  static ffi.Pointer<FsNormCropBox> $allocate(
+    ffi.Allocator $allocator, {
+    required double left,
+    required double top,
+    required double right,
+    required double bottom,
+  }) => $allocator<FsNormCropBox>()
+    ..ref.left = left
+    ..ref.top = top
+    ..ref.right = right
+    ..ref.bottom = bottom;
+}
+
 /// Explicit 56-byte POD layout for Dart ffigen compatibility.
 final class FsRafMetadata extends ffi.Struct {
   @ffi.Uint32()
@@ -503,7 +900,8 @@ enum FsStatusCode {
   FS_ERR_JPEG_INVALID_SOI(-17),
   FS_ERR_JPEG_INVALID_EOI(-18),
   FS_ERR_UNSUPPORTED_PLATFORM(-19),
-  FS_ERR_INVALID_PARAMS(-20);
+  FS_ERR_INVALID_PARAMS(-20),
+  FS_ERR_COLLAGE_INVALID_SLOTS(-21);
 
   final int value;
   const FsStatusCode(this.value);
@@ -525,6 +923,7 @@ enum FsStatusCode {
     -18 => FS_ERR_JPEG_INVALID_EOI,
     -19 => FS_ERR_UNSUPPORTED_PLATFORM,
     -20 => FS_ERR_INVALID_PARAMS,
+    -21 => FS_ERR_COLLAGE_INVALID_SLOTS,
     _ => throw ArgumentError('Unknown value for FsStatusCode: $value'),
   };
 }

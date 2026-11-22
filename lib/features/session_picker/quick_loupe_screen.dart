@@ -10,6 +10,7 @@ import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/storage/proxy_cache_manager.dart';
 import '../../core/theme/fuji_theme.dart';
 import '../studio_editor/dna_rescue_mapper.dart';
+import '../studio_editor/geometry_mapper.dart';
 import '../studio_editor/studio_editor_screen.dart';
 
 /// Full-resolution (`1600px` proxy) single-image loupe viewer with `1x..3x`
@@ -99,7 +100,8 @@ class _QuickLoupeScreenState extends ConsumerState<QuickLoupeScreen> {
     final currentPair = state.pairedAssetsById[currentId];
     final currentStatus = currentItem?.cullResult?.status;
     final isDnaEdited = currentItem != null &&
-        DnaRescueMapper.isEdited(currentItem.editRecipe.dnaRescue);
+        (DnaRescueMapper.isEdited(currentItem.editRecipe.dnaRescue) ||
+            GeometryMapper.isEdited(currentItem.editRecipe.geometry));
 
     return Scaffold(
       backgroundColor: FujiColors.canvas,
