@@ -51,7 +51,8 @@ enum FsStatusCode {
   FS_ERR_JPEG_INVALID_EOI     = -18,
   FS_ERR_UNSUPPORTED_PLATFORM = -19,
 
-  FS_ERR_INVALID_PARAMS       = -20
+  FS_ERR_INVALID_PARAMS       = -20,
+  FS_ERR_COLLAGE_INVALID_SLOTS = -21
 };
 
 typedef enum FsExifOrientation {
@@ -198,6 +199,122 @@ FS_API int32_t fs_dna_rescue_analyze_rgba(
     int32_t width,
     int32_t height,
     FsDnaRescueSuggestion* out_suggestion);
+
+typedef enum FsAspectPreset {
+  FS_ASPECT_ORIGINAL = 0,
+  FS_ASPECT_4_5      = 1,
+  FS_ASPECT_1_1      = 2,
+  FS_ASPECT_3_2      = 3,
+  FS_ASPECT_9_16     = 4
+} FsAspectPreset;
+
+typedef enum FsCollageTemplate {
+  FS_COLLAGE_SPLIT_2_V    = 0,
+  FS_COLLAGE_SPLIT_2_H    = 1,
+  FS_COLLAGE_GRID_3_STRIP = 2,
+  FS_COLLAGE_GRID_3_TOP   = 3,
+  FS_COLLAGE_GRID_3_LEFT  = 4,
+  FS_COLLAGE_GRID_4_EVEN  = 5
+} FsCollageTemplate;
+
+typedef struct FsNormCropBox {
+  float left;
+  float top;
+  float right;
+  float bottom;
+} FsNormCropBox;
+
+typedef struct FsGeometryParams {
+  float         rotation_deg;
+  int32_t       aspect_preset;
+  FsNormCropBox crop_box;
+  int32_t       high_quality;
+} FsGeometryParams;
+
+typedef struct FsGeometryProposal {
+  float         suggested_rotation_deg;
+  float         horizon_confidence;
+  FsNormCropBox suggested_crop_box;
+  float         crop_confidence;
+  float         saliency_cx;
+  float         saliency_cy;
+  int32_t       has_horizon_line;
+  int32_t       target_aspect_preset;
+} FsGeometryProposal;
+
+typedef struct FsCollageInputSlot {
+  const uint8_t* rgba;
+  size_t         rgba_len;
+  int32_t        width;
+  int32_t        height;
+  float          pan_x;
+  float          pan_y;
+  float          zoom;
+  int32_t        reserved;
+} FsCollageInputSlot;
+
+typedef struct FsCollageConfig {
+  int32_t template_id;
+  int32_t canvas_width;
+  int32_t canvas_height;
+  int32_t gutter_px;
+  int32_t outer_margin_px;
+  uint8_t bg_r;
+  uint8_t bg_g;
+  uint8_t bg_b;
+  uint8_t bg_a;
+} FsCollageConfig;
+
+/**
+ * Clamps a normalized crop box inside the zero-black-corners inscribed space
+ * for the given source dimensions, rotation angle, and aspect preset.
+ */
+FS_API int32_t fs_geometry_clamp_crop(
+    int32_t src_width,
+    int32_t src_height,
+    float rotation_deg,
+    int32_t aspect_preset,
+    const FsNormCropBox* requested_box,
+    FsNormCropBox* out_clamped_box,
+    int32_t* out_pixel_width,
+    int32_t* out_pixel_height);
+
+/**
+ * Analyzes an RGBA8888 buffer for automatic horizon leveling and saliency-based
+ * social aspect cropping.
+ */
+FS_API int32_t fs_geometry_analyze_rgba(
+    const uint8_t* input_rgba,
+    size_t input_len,
+    int32_t width,
+    int32_t height,
+    int32_t target_aspect_preset,
+    FsGeometryProposal* out_proposal);
+
+/**
+ * Renders rotated and cropped RGBA8888 output into caller-allocated `out_rgba`.
+ * In-place aliasing (`out_rgba == input_rgba`) is rejected with FS_ERR_INVALID_PARAMS.
+ */
+FS_API int32_t fs_geometry_render_rgba_into(
+    const uint8_t* input_rgba,
+    size_t input_len,
+    int32_t src_width,
+    int32_t src_height,
+    const FsGeometryParams* params,
+    uint8_t* out_rgba,
+    size_t out_len,
+    int32_t out_width,
+    int32_t out_height);
+
+/**
+ * Stitches 2-4 RGBA8888 slot images into a caller-allocated story collage canvas.
+ */
+FS_API int32_t fs_collage_render_rgba_into(
+    const FsCollageInputSlot* slots,
+    int32_t slot_count,
+    const FsCollageConfig* config,
+    uint8_t* out_canvas_rgba,
+    size_t out_canvas_len);
 
 #ifdef __cplusplus
 }

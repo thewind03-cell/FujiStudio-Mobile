@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/session_picker/session_controller.dart';
+import '../../features/story_collage/story_collage_controller.dart';
 import '../../features/studio_editor/studio_editor_controller.dart';
 import '../ffi/native_worker.dart';
 import '../session/session_store.dart';
@@ -49,5 +50,13 @@ final studioNativeGatewayProvider = Provider<StudioNativeGateway>(
 );
 
 final studioFrameLoaderProvider = Provider<StudioFrameLoader?>(
+  (ref) => null,
+);
+
+final collageNativeGatewayProvider = Provider<StoryCollageNativeGateway>(
+  (ref) => NativeWorkerCollageGateway(ref.watch(nativeWorkerProvider)),
+);
+
+final collageSlotLoaderProvider = Provider<StoryCollageSlotLoader?>(
   (ref) => null,
 );

@@ -10,7 +10,9 @@ import '../../core/schema/session_item.dart';
 import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/storage/proxy_cache_manager.dart';
 import '../../core/theme/fuji_theme.dart';
+import '../story_collage/story_collage_screen.dart';
 import '../studio_editor/dna_rescue_mapper.dart';
+import '../studio_editor/geometry_mapper.dart';
 import 'quick_loupe_screen.dart';
 import 'session_controller.dart';
 
@@ -75,6 +77,7 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
               _FilterChipStrip(
                 state: state,
                 onSelect: controller.setFilter,
+                onOpenCollage: () => unawaited(_openCollage(state)),
               ),
               if (state.missingFromGalleryCount > 0)
                 Container(
@@ -103,6 +106,35 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Future<void> _openCollage(SessionState state) async {
+    if (state.totalCount < 2) return;
+    final keepIds = <String>[];
+    for (final id in state.galleryOrderedItemIds) {
+      final item = state.itemById(id);
+      if (item?.cullResult?.status == 'keep') {
+        keepIds.add(id);
+      }
+    }
+
+    List<String>? targetIds;
+    if (keepIds.length >= 2 && keepIds.length <= 4) {
+      targetIds = keepIds;
+    } else {
+      targetIds = await showCollageImagePickerSheet(
+        context: context,
+        sessionState: state,
+        initialSelectedIds: keepIds.take(4).toList(),
+      );
+    }
+
+    if (!mounted || targetIds == null || targetIds.length < 2) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => StoryCollageScreen(initialItemIds: targetIds!),
       ),
     );
   }
@@ -280,13 +312,16 @@ class _FilterChipStrip extends StatelessWidget {
   const _FilterChipStrip({
     required this.state,
     required this.onSelect,
+    required this.onOpenCollage,
   });
 
   final SessionState state;
   final void Function(GridFilterMode mode) onSelect;
+  final VoidCallback onOpenCollage;
 
   @override
   Widget build(BuildContext context) {
+    final canCollage = state.totalCount >= 2;
     return Container(
       height: 44,
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -296,16 +331,52 @@ class _FilterChipStrip extends StatelessWidget {
           bottom: BorderSide(color: FujiColors.border, width: 1),
         ),
       ),
-      child: ListView(
-        scrollDirection: Axis.horizontal,
+      child: Row(
         children: <Widget>[
-          _chip(GridFilterMode.all, 'TẤT CẢ', state.totalCount),
+          Expanded(
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: <Widget>[
+                _chip(GridFilterMode.all, 'TẤT CẢ', state.totalCount),
+                const SizedBox(width: 6),
+                _chip(GridFilterMode.keep, 'CHỌN', state.keepCount),
+                const SizedBox(width: 6),
+                _chip(GridFilterMode.unmarked, 'CHƯA GẮN', state.unmarkedCount),
+                const SizedBox(width: 6),
+                _chip(GridFilterMode.reject, 'LOẠI', state.rejectCount),
+              ],
+            ),
+          ),
           const SizedBox(width: 6),
-          _chip(GridFilterMode.keep, 'CHỌN', state.keepCount),
-          const SizedBox(width: 6),
-          _chip(GridFilterMode.unmarked, 'CHƯA GẮN', state.unmarkedCount),
-          const SizedBox(width: 6),
-          _chip(GridFilterMode.reject, 'LOẠI', state.rejectCount),
+          InkWell(
+            key: const Key('grid_collage_button'),
+            onTap: canCollage ? onOpenCollage : null,
+            borderRadius: BorderRadius.circular(4),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              decoration: BoxDecoration(
+                color: canCollage
+                    ? FujiColors.accent.withValues(alpha: 0.16)
+                    : FujiColors.surface,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: canCollage ? FujiColors.accent : FujiColors.border,
+                  width: 1,
+                ),
+              ),
+              child: Text(
+                '⊞ COLLAGE',
+                style: TextStyle(
+                  color: canCollage
+                      ? FujiColors.accent
+                      : FujiColors.textSecondary,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -430,7 +501,8 @@ class _PhotoGridTileState extends ConsumerState<PhotoGridTile> {
     final status = widget.item.cullResult?.status;
     final isKeep = status == 'keep';
     final isReject = status == 'reject';
-    final isEdited = DnaRescueMapper.isEdited(widget.item.editRecipe.dnaRescue);
+    final isEdited = DnaRescueMapper.isEdited(widget.item.editRecipe.dnaRescue) ||
+        GeometryMapper.isEdited(widget.item.editRecipe.geometry);
 
     final rawBadge = switch (widget.pairedAsset.kind) {
       AssetPairKind.jpgPlusRaf => 'J+R',

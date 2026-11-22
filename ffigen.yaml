@@ -16,11 +16,18 @@ structs:
     - 'FsRafMetadata'
     - 'FsDnaRescueParams'
     - 'FsDnaRescueSuggestion'
+    - 'FsNormCropBox'
+    - 'FsGeometryParams'
+    - 'FsGeometryProposal'
+    - 'FsCollageInputSlot'
+    - 'FsCollageConfig'
 enums:
   include:
     - 'FsStatusCode'
     - 'FsExifOrientation'
     - 'FsDnaRescueMode'
+    - 'FsAspectPreset'
+    - 'FsCollageTemplate'
 macros:
   include:
     - 'FS_MAX_IMAGE_DIMENSION'

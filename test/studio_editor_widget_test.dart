@@ -78,6 +78,46 @@ final class _WidgetStudioGateway implements StudioNativeGateway {
   }
 
   @override
+  Future<GeometryProposalNative> analyzeGeometryOnSurface({
+    required int surfaceId,
+    required int targetAspectPreset,
+  }) async {
+    return GeometryProposalNative(
+      statusCode: FsStatusCode.FS_OK.value,
+      elapsedMicroseconds: 400,
+      suggestedRotationDeg: -1.4,
+      horizonConfidence: 0.91,
+      suggestedCropBox: const NormCropBoxData(
+        left: 0.05,
+        top: 0.05,
+        right: 0.95,
+        bottom: 0.95,
+      ),
+      cropConfidence: 0.89,
+      saliencyCx: 0.5,
+      saliencyCy: 0.5,
+      hasHorizonLine: true,
+      targetAspectPreset: targetAspectPreset,
+    );
+  }
+
+  @override
+  Future<StudioRenderResult> renderGeometryOnSurface({
+    required int surfaceId,
+    required GeometryNativeParams params,
+    required int outWidth,
+    required int outHeight,
+  }) async {
+    return StudioRenderResult(
+      statusCode: FsStatusCode.FS_OK.value,
+      renderTimeMicros: 900,
+      width: outWidth,
+      height: outHeight,
+      rgbaBytes: Uint8List(outWidth * outHeight * 4),
+    );
+  }
+
+  @override
   Future<void> closeStudioSurface(int surfaceId) async {
     closedSurfaceIds.add(surfaceId);
   }
@@ -387,21 +427,27 @@ void main() {
         await tester.pump();
         expect(find.byType(StudioEditorScreen), findsOneWidget);
 
-        // Trigger a pending change so flushPendingSave() does real async I/O.
+        // Trigger a pending change and flush disk I/O in real async zone so FakeAsync
+        // does not stall RandomAccessFile during Navigator pop.
         await tester.tap(find.byKey(const Key('studio_auto_button')));
         await tester.pump();
         await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
         await tester.pump();
-
-        // Tap Back twice consecutively before flushPendingSave completes.
-        final backFinder = find.byKey(const Key('studio_back_button'));
-        await tester.tap(backFinder);
-        await tester.tap(backFinder);
         await tester.runAsync(() => sessionController.flushPendingSave());
+
+        // Invoke back twice before the first async flushPendingSave() future resolves
+        // to simulate a rapid double-tap while _handleBack() is in-flight.
+        final backButton = tester.widget<IconButton>(
+          find.byKey(const Key('studio_back_button')),
+        );
+        backButton.onPressed!();
+        backButton.onPressed!();
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
         await tester.pumpAndSettle();
 
-        expect(observer.popCount, equals(1));
         expect(find.byType(StudioEditorScreen), findsNothing);
+        expect(observer.popCount, equals(1));
         expect(find.byType(QuickLoupeScreen), findsOneWidget);
 
         await tester.runAsync(() async {
