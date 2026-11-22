@@ -168,6 +168,12 @@ final class SessionController extends StateNotifier<SessionState> {
     return 'item_$hash';
   }
 
+  /// Safely reads the current [EditRecipe] for [itemId] without exposing
+  /// protected `StateNotifier.state` outside this controller.
+  EditRecipe? editRecipeForItem(String itemId) {
+    return state.itemById(itemId)?.editRecipe;
+  }
+
   /// Opens [album], fetches all media descriptors via [StorageGateway], pairs
   /// `.JPG`/`.RAF` files, performs 3-way reconciliation with any saved
   /// `.fujistudio_session.json`, and pins the album's proxy cache keys.
@@ -319,6 +325,64 @@ final class SessionController extends StateNotifier<SessionState> {
     final nextState = state.copyWith(
       document: updatedDoc,
       visibleItemIds: visibleIds,
+      isSaving: true,
+      hasPendingChanges: true,
+    );
+    state = nextState;
+
+    final gen = ++_saveGeneration;
+    unawaited(
+      _sessionStore
+          .scheduleSave(
+            albumKey,
+            updatedDoc,
+            recentEntry: _buildRecentEntry(
+              album: album,
+              albumKey: albumKey,
+              state: nextState,
+            ),
+          )
+          .then((_) {
+            if (mounted && gen == _saveGeneration) {
+              state = state.copyWith(
+                isSaving: false,
+                hasPendingChanges: false,
+                lastSavedAt: DateTime.now(),
+              );
+            }
+          }),
+    );
+  }
+
+  /// Updates only `editRecipe` for [itemId], preserving 100% of `cullResult`,
+  /// `actionProposals`, and Desktop v2.4.2 `unknownFields`.
+  void updateItemEditRecipe(String itemId, EditRecipe updatedRecipe) {
+    final doc = state.document;
+    final album = state.album;
+    final albumKey = state.albumKey;
+    if (doc == null || album == null || albumKey == null) return;
+
+    var changed = false;
+    final updatedItems = <SessionItem>[];
+    for (final item in doc.items) {
+      if (item.id != itemId) {
+        updatedItems.add(item);
+        continue;
+      }
+      changed = true;
+      updatedItems.add(item.copyWith(editRecipe: updatedRecipe));
+    }
+
+    if (!changed) return;
+
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final updatedDoc = doc.copyWith(
+      updatedAt: nowIso,
+      items: updatedItems,
+    );
+
+    final nextState = state.copyWith(
+      document: updatedDoc,
       isSaving: true,
       hasPendingChanges: true,
     );

@@ -24,6 +24,68 @@ final class InvertRgbaResult {
   double get elapsedMilliseconds => elapsedMicroseconds / 1000.0;
 }
 
+/// Normalized DNA-Aware Shadow Rescue parameters passed across [NativeWorker].
+final class DnaRescueNativeParams {
+  const DnaRescueNativeParams({
+    required this.shadowLift,
+    this.midtoneAnchor = 0.55,
+    this.highlightProtect = 0.90,
+    this.mode = 0,
+    this.enabled = true,
+  });
+
+  final double shadowLift;
+  final double midtoneAnchor;
+  final double highlightProtect;
+  final int mode;
+  final bool enabled;
+}
+
+/// Result returned by [NativeWorker.renderStudioSurface].
+final class StudioRenderResult {
+  const StudioRenderResult({
+    required this.statusCode,
+    required this.renderTimeMicros,
+    required this.width,
+    required this.height,
+    this.rgbaBytes,
+  });
+
+  final int statusCode;
+  final int renderTimeMicros;
+  final int width;
+  final int height;
+  final Uint8List? rgbaBytes;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+  double get renderTimeMs => renderTimeMicros / 1000.0;
+}
+
+/// Result returned by [NativeWorker.analyzeStudioSurface].
+final class DnaRescueSuggestionResult {
+  const DnaRescueSuggestionResult({
+    required this.statusCode,
+    required this.elapsedMicroseconds,
+    required this.recommendedShadowLift,
+    required this.p10Luma,
+    required this.p50Luma,
+    required this.p95Luma,
+    required this.shadowPixelRatio,
+    required this.recommendedMode,
+  });
+
+  final int statusCode;
+  final int elapsedMicroseconds;
+  final double recommendedShadowLift;
+  final double p10Luma;
+  final double p50Luma;
+  final double p95Luma;
+  final double shadowPixelRatio;
+  final int recommendedMode;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+}
+
 /// Result returned by [NativeWorker.extractRafPreviewFromFd] and
 /// [NativeWorker.extractRafPreviewFromPath].
 final class RafExtractionResult {
@@ -284,6 +346,61 @@ final class NativeWorker {
     );
   }
 
+  /// Allocates a resident native RGBA surface inside the Worker Isolate (max 2
+  /// concurrent surfaces) and copies [sourceRgba] once via [TransferableTypedData].
+  Future<int> openStudioSurface({
+    required int width,
+    required int height,
+    required Uint8List sourceRgba,
+  }) async {
+    return _sendRequest<int>(
+      (id) => _OpenStudioSurfaceRequest(
+        id: id,
+        width: width,
+        height: height,
+        sourceByteLength: sourceRgba.length,
+        sourceRgba: TransferableTypedData.fromList(<Uint8List>[sourceRgba]),
+      ),
+    );
+  }
+
+  /// Renders DNA-Aware Shadow Rescue on an open resident [surfaceId] with
+  /// zero per-frame native heap allocations.
+  Future<StudioRenderResult> renderStudioSurface({
+    required int surfaceId,
+    required DnaRescueNativeParams params,
+  }) async {
+    return _sendRequest<StudioRenderResult>(
+      (id) => _RenderStudioSurfaceRequest(
+        id: id,
+        surfaceId: surfaceId,
+        params: params,
+      ),
+    );
+  }
+
+  /// Analyzes the source pixels of [surfaceId] for 1-tap Auto Rescue.
+  Future<DnaRescueSuggestionResult> analyzeStudioSurface({
+    required int surfaceId,
+  }) async {
+    return _sendRequest<DnaRescueSuggestionResult>(
+      (id) => _AnalyzeStudioSurfaceRequest(
+        id: id,
+        surfaceId: surfaceId,
+      ),
+    );
+  }
+
+  /// Idempotently closes and frees native buffers associated with [surfaceId].
+  Future<void> closeStudioSurface(int surfaceId) async {
+    await _sendRequest<void>(
+      (id) => _CloseStudioSurfaceRequest(
+        id: id,
+        surfaceId: surfaceId,
+      ),
+    );
+  }
+
   /// Idempotently shuts down the background Isolate and releases all ports.
   ///
   /// Concurrent or repeated calls return the exact same [Future] and complete
@@ -376,6 +493,20 @@ final class NativeWorker {
       return;
     }
 
+    if (payload is _StudioRenderPayload) {
+      final bytes = payload.transferable?.materialize().asUint8List();
+      completer.complete(
+        StudioRenderResult(
+          statusCode: payload.statusCode,
+          renderTimeMicros: payload.renderTimeMicros,
+          width: payload.width,
+          height: payload.height,
+          rgbaBytes: bytes,
+        ),
+      );
+      return;
+    }
+
     completer.complete(payload);
   }
 }
@@ -394,81 +525,157 @@ void _workerEntryPoint(_WorkerBootstrap bootstrap) {
   final commandPort = ReceivePort();
   bootstrap.replyPort.send(commandPort.sendPort);
 
+  final studioSurfaces = <int, _StudioSurface>{};
+  var nextSurfaceId = 1;
+  void cleanupAllSurfaces() {
+    for (final surface in studioSurfaces.values) {
+      surface.dispose();
+    }
+    studioSurfaces.clear();
+  }
+
   SendPort? responsePort;
-  commandPort.listen((Object? message) {
-    if (message is _AttachResponsePort) {
-      responsePort = message.port;
-      return;
-    }
-
-    if (message is _ShutdownRequest) {
-      commandPort.close();
-      return;
-    }
-
-    if (message is _VersionRequest) {
-      try {
-        final ptr = bindings.fs_core_version();
-        final version = ptr == ffi.nullptr
-            ? ''
-            : ptr.cast<Utf8>().toDartString();
-        responsePort?.send(_WorkerResponse(id: message.id, payload: version));
-      } catch (error) {
-        responsePort?.send(
-          _WorkerResponse(id: message.id, error: error.toString()),
-        );
+  commandPort.listen(
+    (Object? message) {
+      if (message is _AttachResponsePort) {
+        responsePort = message.port;
+        return;
       }
-      return;
-    }
 
-    if (message is _InvertRgbaRequest) {
-      try {
-        final payload = _executeInvertRgba(bindings, message);
-        responsePort?.send(_WorkerResponse(id: message.id, payload: payload));
-      } catch (error) {
-        responsePort?.send(
-          _WorkerResponse(id: message.id, error: error.toString()),
-        );
+      if (message is _ShutdownRequest) {
+        cleanupAllSurfaces();
+        commandPort.close();
+        return;
       }
-      return;
-    }
 
-    if (message is _ExtractRafFromFdRequest) {
-      try {
-        final result = _executeExtractRafFromFd(bindings, message);
-        responsePort?.send(_WorkerResponse(id: message.id, payload: result));
-      } catch (error) {
-        responsePort?.send(
-          _WorkerResponse(id: message.id, error: error.toString()),
-        );
+      if (message is _VersionRequest) {
+        try {
+          final ptr = bindings.fs_core_version();
+          final version = ptr == ffi.nullptr
+              ? ''
+              : ptr.cast<Utf8>().toDartString();
+          responsePort?.send(_WorkerResponse(id: message.id, payload: version));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
       }
-      return;
-    }
 
-    if (message is _ExtractRafFromPathRequest) {
-      try {
-        final result = _executeExtractRafFromPath(bindings, message);
-        responsePort?.send(_WorkerResponse(id: message.id, payload: result));
-      } catch (error) {
-        responsePort?.send(
-          _WorkerResponse(id: message.id, error: error.toString()),
-        );
+      if (message is _InvertRgbaRequest) {
+        try {
+          final payload = _executeInvertRgba(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: payload));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
       }
-      return;
-    }
 
-    if (message is _InspectJpegRequest) {
-      try {
-        final result = _executeInspectJpeg(bindings, message);
-        responsePort?.send(_WorkerResponse(id: message.id, payload: result));
-      } catch (error) {
-        responsePort?.send(
-          _WorkerResponse(id: message.id, error: error.toString()),
-        );
+      if (message is _ExtractRafFromFdRequest) {
+        try {
+          final result = _executeExtractRafFromFd(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
       }
-      return;
-    }
-  });
+
+      if (message is _ExtractRafFromPathRequest) {
+        try {
+          final result = _executeExtractRafFromPath(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _InspectJpegRequest) {
+        try {
+          final result = _executeInspectJpeg(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _OpenStudioSurfaceRequest) {
+        try {
+          final surfaceId = _executeOpenStudioSurface(
+            message,
+            studioSurfaces,
+            () => nextSurfaceId++,
+          );
+          responsePort?.send(
+            _WorkerResponse(id: message.id, payload: surfaceId),
+          );
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _RenderStudioSurfaceRequest) {
+        try {
+          final payload = _executeRenderStudioSurface(
+            bindings,
+            message,
+            studioSurfaces,
+          );
+          responsePort?.send(_WorkerResponse(id: message.id, payload: payload));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _AnalyzeStudioSurfaceRequest) {
+        try {
+          final result = _executeAnalyzeStudioSurface(
+            bindings,
+            message,
+            studioSurfaces,
+          );
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _CloseStudioSurfaceRequest) {
+        try {
+          final surface = studioSurfaces.remove(message.surfaceId);
+          surface?.dispose();
+          responsePort?.send(_WorkerResponse(id: message.id, payload: null));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+    },
+    onDone: cleanupAllSurfaces,
+  );
 }
 
 _InvertRgbaPayload _executeInvertRgba(
@@ -720,6 +927,199 @@ JpegInspectResult _executeInspectJpeg(
   }
 }
 
+int _executeOpenStudioSurface(
+  _OpenStudioSurfaceRequest request,
+  Map<int, _StudioSurface> studioSurfaces,
+  int Function() nextId,
+) {
+  if (studioSurfaces.length >= 2) {
+    throw StateError('Maximum concurrent studio surfaces (2) exceeded.');
+  }
+
+  const int maxInt32 = 0x7FFFFFFF;
+  const int maxImageDim = FS_MAX_IMAGE_DIMENSION;
+
+  if (request.width <= 0 || request.height <= 0) {
+    throw ArgumentError(
+      'Invalid studio surface dimensions: ${request.width}x${request.height}',
+    );
+  }
+  if (request.width > maxInt32 ||
+      request.height > maxInt32 ||
+      request.width > maxImageDim ||
+      request.height > maxImageDim ||
+      request.width > (maxInt32 ~/ 4) ~/ request.height) {
+    throw RangeError(
+      'Studio surface dimensions overflow int32/FS_MAX_IMAGE_DIMENSION.',
+    );
+  }
+
+  final byteLen = request.width * request.height * 4;
+  if (request.sourceByteLength < byteLen) {
+    throw ArgumentError(
+      'Undersized sourceRgba (${request.sourceByteLength} < $byteLen).',
+    );
+  }
+
+  ffi.Pointer<ffi.Uint8> srcPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> dstPtr = ffi.nullptr;
+  ffi.Pointer<FsDnaRescueParams> paramsPtr = ffi.nullptr;
+  ffi.Pointer<FsDnaRescueSuggestion> suggestionPtr = ffi.nullptr;
+
+  try {
+    final sourceBytes = request.sourceRgba.materialize().asUint8List();
+    srcPtr = calloc<ffi.Uint8>(byteLen);
+    dstPtr = calloc<ffi.Uint8>(byteLen);
+    paramsPtr = calloc<FsDnaRescueParams>();
+    suggestionPtr = calloc<FsDnaRescueSuggestion>();
+    srcPtr.asTypedList(byteLen).setRange(0, byteLen, sourceBytes);
+
+    final id = nextId();
+    studioSurfaces[id] = _StudioSurface(
+      width: request.width,
+      height: request.height,
+      byteLen: byteLen,
+      srcPtr: srcPtr,
+      dstPtr: dstPtr,
+      paramsPtr: paramsPtr,
+      suggestionPtr: suggestionPtr,
+    );
+    srcPtr = ffi.nullptr;
+    dstPtr = ffi.nullptr;
+    paramsPtr = ffi.nullptr;
+    suggestionPtr = ffi.nullptr;
+    return id;
+  } finally {
+    if (suggestionPtr != ffi.nullptr) calloc.free(suggestionPtr);
+    if (paramsPtr != ffi.nullptr) calloc.free(paramsPtr);
+    if (dstPtr != ffi.nullptr) calloc.free(dstPtr);
+    if (srcPtr != ffi.nullptr) calloc.free(srcPtr);
+  }
+}
+
+_StudioRenderPayload _executeRenderStudioSurface(
+  FujiStudioBindings bindings,
+  _RenderStudioSurfaceRequest request,
+  Map<int, _StudioSurface> studioSurfaces,
+) {
+  final surface = studioSurfaces[request.surfaceId];
+  if (surface == null) {
+    throw StateError('Studio surface ${request.surfaceId} is not open.');
+  }
+
+  surface.paramsPtr.ref
+    ..shadow_lift = request.params.shadowLift
+    ..midtone_anchor = request.params.midtoneAnchor
+    ..highlight_protect = request.params.highlightProtect
+    ..mode = request.params.mode
+    ..enabled = request.params.enabled ? 1 : 0;
+
+  final sw = Stopwatch()..start();
+  final rc = bindings.fs_dna_rescue_apply_rgba_into(
+    surface.srcPtr,
+    surface.byteLen,
+    surface.width,
+    surface.height,
+    surface.paramsPtr,
+    surface.dstPtr,
+    surface.byteLen,
+  );
+  sw.stop();
+
+  if (rc != FsStatusCode.FS_OK.value) {
+    return _StudioRenderPayload(
+      statusCode: rc,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: surface.width,
+      height: surface.height,
+      transferable: null,
+    );
+  }
+
+  final transferable = TransferableTypedData.fromList(<Uint8List>[
+    surface.dstPtr.asTypedList(surface.byteLen),
+  ]);
+  return _StudioRenderPayload(
+    statusCode: rc,
+    renderTimeMicros: sw.elapsedMicroseconds,
+    width: surface.width,
+    height: surface.height,
+    transferable: transferable,
+  );
+}
+
+DnaRescueSuggestionResult _executeAnalyzeStudioSurface(
+  FujiStudioBindings bindings,
+  _AnalyzeStudioSurfaceRequest request,
+  Map<int, _StudioSurface> studioSurfaces,
+) {
+  final surface = studioSurfaces[request.surfaceId];
+  if (surface == null) {
+    throw StateError('Studio surface ${request.surfaceId} is not open.');
+  }
+
+  final sw = Stopwatch()..start();
+  final rc = bindings.fs_dna_rescue_analyze_rgba(
+    surface.srcPtr,
+    surface.byteLen,
+    surface.width,
+    surface.height,
+    surface.suggestionPtr,
+  );
+  sw.stop();
+
+  final sug = surface.suggestionPtr.ref;
+  return DnaRescueSuggestionResult(
+    statusCode: rc,
+    elapsedMicroseconds: sw.elapsedMicroseconds,
+    recommendedShadowLift: sug.recommended_shadow_lift,
+    p10Luma: sug.p10_luma,
+    p50Luma: sug.p50_luma,
+    p95Luma: sug.p95_luma,
+    shadowPixelRatio: sug.shadow_pixel_ratio,
+    recommendedMode: sug.recommended_mode,
+  );
+}
+
+final class _StudioSurface {
+  _StudioSurface({
+    required this.width,
+    required this.height,
+    required this.byteLen,
+    required this.srcPtr,
+    required this.dstPtr,
+    required this.paramsPtr,
+    required this.suggestionPtr,
+  });
+
+  final int width;
+  final int height;
+  final int byteLen;
+  ffi.Pointer<ffi.Uint8> srcPtr;
+  ffi.Pointer<ffi.Uint8> dstPtr;
+  ffi.Pointer<FsDnaRescueParams> paramsPtr;
+  ffi.Pointer<FsDnaRescueSuggestion> suggestionPtr;
+
+  void dispose() {
+    if (suggestionPtr != ffi.nullptr) {
+      calloc.free(suggestionPtr);
+      suggestionPtr = ffi.nullptr;
+    }
+    if (paramsPtr != ffi.nullptr) {
+      calloc.free(paramsPtr);
+      paramsPtr = ffi.nullptr;
+    }
+    if (dstPtr != ffi.nullptr) {
+      calloc.free(dstPtr);
+      dstPtr = ffi.nullptr;
+    }
+    if (srcPtr != ffi.nullptr) {
+      calloc.free(srcPtr);
+      srcPtr = ffi.nullptr;
+    }
+  }
+}
+
 final class _WorkerBootstrap {
   const _WorkerBootstrap({
     required this.replyPort,
@@ -795,6 +1195,50 @@ final class _InspectJpegRequest extends _WorkerRequest {
   final TransferableTypedData jpegBytes;
 }
 
+final class _OpenStudioSurfaceRequest extends _WorkerRequest {
+  const _OpenStudioSurfaceRequest({
+    required super.id,
+    required this.width,
+    required this.height,
+    required this.sourceByteLength,
+    required this.sourceRgba,
+  });
+
+  final int width;
+  final int height;
+  final int sourceByteLength;
+  final TransferableTypedData sourceRgba;
+}
+
+final class _RenderStudioSurfaceRequest extends _WorkerRequest {
+  const _RenderStudioSurfaceRequest({
+    required super.id,
+    required this.surfaceId,
+    required this.params,
+  });
+
+  final int surfaceId;
+  final DnaRescueNativeParams params;
+}
+
+final class _AnalyzeStudioSurfaceRequest extends _WorkerRequest {
+  const _AnalyzeStudioSurfaceRequest({
+    required super.id,
+    required this.surfaceId,
+  });
+
+  final int surfaceId;
+}
+
+final class _CloseStudioSurfaceRequest extends _WorkerRequest {
+  const _CloseStudioSurfaceRequest({
+    required super.id,
+    required this.surfaceId,
+  });
+
+  final int surfaceId;
+}
+
 final class _ShutdownRequest {
   const _ShutdownRequest();
 }
@@ -820,5 +1264,21 @@ final class _InvertRgbaPayload {
 
   final int statusCode;
   final int elapsedMicroseconds;
+  final TransferableTypedData? transferable;
+}
+
+final class _StudioRenderPayload {
+  const _StudioRenderPayload({
+    required this.statusCode,
+    required this.renderTimeMicros,
+    required this.width,
+    required this.height,
+    required this.transferable,
+  });
+
+  final int statusCode;
+  final int renderTimeMicros;
+  final int width;
+  final int height;
   final TransferableTypedData? transferable;
 }

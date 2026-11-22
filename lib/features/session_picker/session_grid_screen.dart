@@ -10,6 +10,7 @@ import '../../core/schema/session_item.dart';
 import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/storage/proxy_cache_manager.dart';
 import '../../core/theme/fuji_theme.dart';
+import '../studio_editor/dna_rescue_mapper.dart';
 import 'quick_loupe_screen.dart';
 import 'session_controller.dart';
 
@@ -25,11 +26,22 @@ class SessionGridScreen extends ConsumerStatefulWidget {
 
 class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
   int _columnCount = 3;
+  bool _isPopping = false;
 
   Future<void> _handleBack() async {
-    await ref.read(sessionControllerProvider.notifier).flushPendingSave();
-    if (!mounted) return;
-    Navigator.of(context).pop();
+    if (_isPopping) return;
+    _isPopping = true;
+    var didPop = false;
+    try {
+      await ref.read(sessionControllerProvider.notifier).flushPendingSave();
+      if (!mounted) return;
+      didPop = true;
+      Navigator.of(context).pop();
+    } finally {
+      if (mounted && !didPop) {
+        _isPopping = false;
+      }
+    }
   }
 
   @override
@@ -418,6 +430,7 @@ class _PhotoGridTileState extends ConsumerState<PhotoGridTile> {
     final status = widget.item.cullResult?.status;
     final isKeep = status == 'keep';
     final isReject = status == 'reject';
+    final isEdited = DnaRescueMapper.isEdited(widget.item.editRecipe.dnaRescue);
 
     final rawBadge = switch (widget.pairedAsset.kind) {
       AssetPairKind.jpgPlusRaf => 'J+R',
@@ -481,6 +494,24 @@ class _PhotoGridTileState extends ConsumerState<PhotoGridTile> {
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.3,
                       fontFeatures: FujiTheme.tabularFeatures,
+                    ),
+                  ),
+                ),
+              ),
+            if (isEdited)
+              Positioned(
+                top: 5,
+                right: 5,
+                child: Container(
+                  key: Key('adj_dot_${widget.item.id}'),
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: FujiColors.accent,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: FujiColors.canvas,
+                      width: 1,
                     ),
                   ),
                 ),

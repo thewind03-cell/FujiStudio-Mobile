@@ -9,6 +9,8 @@ import '../../core/di/app_providers.dart';
 import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/storage/proxy_cache_manager.dart';
 import '../../core/theme/fuji_theme.dart';
+import '../studio_editor/dna_rescue_mapper.dart';
+import '../studio_editor/studio_editor_screen.dart';
 
 /// Full-resolution (`1600px` proxy) single-image loupe viewer with `1x..3x`
 /// pinch zoom, 1-ahead prefetching, telemetry line, and thumb-reachable
@@ -96,16 +98,44 @@ class _QuickLoupeScreenState extends ConsumerState<QuickLoupeScreen> {
     final currentItem = state.itemById(currentId);
     final currentPair = state.pairedAssetsById[currentId];
     final currentStatus = currentItem?.cullResult?.status;
+    final isDnaEdited = currentItem != null &&
+        DnaRescueMapper.isEdited(currentItem.editRecipe.dnaRescue);
 
     return Scaffold(
       backgroundColor: FujiColors.canvas,
       appBar: AppBar(
-        title: Text(
-          '${safeIndex + 1} / ${state.visibleItemIds.length}',
-          style: const TextStyle(
-            fontSize: 13,
-            fontFeatures: FujiTheme.tabularFeatures,
-          ),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              '${safeIndex + 1} / ${state.visibleItemIds.length}',
+              style: const TextStyle(
+                fontSize: 13,
+                fontFeatures: FujiTheme.tabularFeatures,
+              ),
+            ),
+            if (isDnaEdited) ...<Widget>[
+              const SizedBox(width: 8),
+              Container(
+                key: const Key('loupe_adj_badge'),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                decoration: BoxDecoration(
+                  color: FujiColors.accent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: FujiColors.accent, width: 0.8),
+                ),
+                child: const Text(
+                  'ADJ',
+                  style: TextStyle(
+                    color: FujiColors.accent,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
         actions: <Widget>[
           Padding(
@@ -215,20 +245,20 @@ class _QuickLoupeScreenState extends ConsumerState<QuickLoupeScreen> {
                     child: _LoupeActionButton(
                       key: const Key('loupe_develop_button'),
                       label: '⚙ HẬU KỲ',
-                      active: false,
+                      active: isDnaEdited,
                       activeColor: FujiColors.accent,
-                      onPressed: () {
-                        ScaffoldMessenger.of(context)
-                          ..hideCurrentSnackBar()
-                          ..showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Sẵn sàng ở Lát cắt 2 — DNA Rescue',
-                              ),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                      },
+                      onPressed: currentPair == null
+                          ? () {}
+                          : () {
+                              Navigator.of(context).push<void>(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => StudioEditorScreen(
+                                    itemId: currentId,
+                                    pairedAsset: currentPair,
+                                  ),
+                                ),
+                              );
+                            },
                     ),
                   ),
                 ],
