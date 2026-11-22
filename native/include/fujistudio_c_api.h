@@ -49,7 +49,9 @@ enum FsStatusCode {
   FS_ERR_RAF_JPEG_TOO_LARGE   = -16,
   FS_ERR_JPEG_INVALID_SOI     = -17,
   FS_ERR_JPEG_INVALID_EOI     = -18,
-  FS_ERR_UNSUPPORTED_PLATFORM = -19
+  FS_ERR_UNSUPPORTED_PLATFORM = -19,
+
+  FS_ERR_INVALID_PARAMS       = -20
 };
 
 typedef enum FsExifOrientation {
@@ -149,6 +151,53 @@ FS_API int32_t fs_jpeg_inspect_buffer(
     uint8_t* out_has_exif_tag,
     uint32_t* out_width,
     uint32_t* out_height);
+
+typedef enum FsDnaRescueMode {
+  FS_DNA_MODE_SOOC_SAFE   = 0,
+  FS_DNA_MODE_DEEP_RESCUE = 1
+} FsDnaRescueMode;
+
+/** Normalized input parameters (20 bytes, explicit 4-byte alignment). */
+typedef struct FsDnaRescueParams {
+  float   shadow_lift;
+  float   midtone_anchor;
+  float   highlight_protect;
+  int32_t mode;
+  int32_t enabled;
+} FsDnaRescueParams;
+
+/** Auto-analyze suggestion output (24 bytes). */
+typedef struct FsDnaRescueSuggestion {
+  float   recommended_shadow_lift;
+  float   p10_luma;
+  float   p50_luma;
+  float   p95_luma;
+  float   shadow_pixel_ratio;
+  int32_t recommended_mode;
+} FsDnaRescueSuggestion;
+
+/**
+ * Applies DNA-Aware Shadow Rescue into caller-allocated `out_rgba`
+ * (supports both in-place `out_rgba == input_rgba` and separate buffers).
+ */
+FS_API int32_t fs_dna_rescue_apply_rgba_into(
+    const uint8_t* input_rgba,
+    size_t input_len,
+    int32_t width,
+    int32_t height,
+    const FsDnaRescueParams* params,
+    uint8_t* out_rgba,
+    size_t out_len);
+
+/**
+ * Analyzes shadow luma distribution of an RGBA8888 buffer for 1-tap Auto Rescue.
+ */
+FS_API int32_t fs_dna_rescue_analyze_rgba(
+    const uint8_t* input_rgba,
+    size_t input_len,
+    int32_t width,
+    int32_t height,
+    FsDnaRescueSuggestion* out_suggestion);
 
 #ifdef __cplusplus
 }

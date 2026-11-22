@@ -14,10 +14,13 @@ functions:
 structs:
   include:
     - 'FsRafMetadata'
+    - 'FsDnaRescueParams'
+    - 'FsDnaRescueSuggestion'
 enums:
   include:
     - 'FsStatusCode'
     - 'FsExifOrientation'
+    - 'FsDnaRescueMode'
 macros:
   include:
     - 'FS_MAX_IMAGE_DIMENSION'

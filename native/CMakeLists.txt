@@ -18,6 +18,7 @@ if(FUJISTUDIO_BUILD_SHARED)
   add_library(fujistudio_core SHARED
     src/fujistudio_c_api.cpp
     src/raf_preview_extractor.cpp
+    src/dna_rescue_engine.cpp
   )
   target_compile_definitions(fujistudio_core
     PRIVATE
@@ -27,6 +28,7 @@ else()
   add_library(fujistudio_core STATIC
     src/fujistudio_c_api.cpp
     src/raf_preview_extractor.cpp
+    src/dna_rescue_engine.cpp
   )
   target_compile_definitions(fujistudio_core
     PUBLIC
@@ -50,6 +52,7 @@ if(ANDROID)
   if(FUJISTUDIO_BUILD_SHARED)
     target_link_options(fujistudio_core PRIVATE
       -Wl,--gc-sections
+      -Wl,--exclude-libs,ALL
       -Wl,-z,max-page-size=16384
     )
   endif()
@@ -147,5 +150,22 @@ else()
     endif()
 
     add_test(NAME raf_extractor_fuzz_test COMMAND raf_extractor_fuzz_test)
+
+    add_executable(dna_rescue_property_test tests/dna_rescue_property_test.cpp)
+    target_link_libraries(dna_rescue_property_test PRIVATE fujistudio_core)
+    set_target_properties(dna_rescue_property_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    if(MSVC)
+      target_compile_options(dna_rescue_property_test PRIVATE /W4 /permissive-)
+    else()
+      target_compile_options(dna_rescue_property_test PRIVATE -Wall -Wextra -Wpedantic)
+      if(_FS_SANITIZER_FLAGS)
+        target_compile_options(dna_rescue_property_test PRIVATE ${_FS_SANITIZER_FLAGS})
+        target_link_options(dna_rescue_property_test PRIVATE -fsanitize=address,undefined)
+      endif()
+    endif()
+
+    add_test(NAME dna_rescue_property_test COMMAND dna_rescue_property_test)
   endif()
 endif()

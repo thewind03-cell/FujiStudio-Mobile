@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/session_picker/session_controller.dart';
+import '../../features/studio_editor/studio_editor_controller.dart';
 import '../ffi/native_worker.dart';
 import '../session/session_store.dart';
 import '../storage/android_storage_gateway.dart';
@@ -42,3 +43,11 @@ final sessionControllerProvider =
         proxyCacheManager: ref.watch(proxyCacheManagerProvider),
       );
     });
+
+final studioNativeGatewayProvider = Provider<StudioNativeGateway>(
+  (ref) => NativeWorkerStudioGateway(ref.watch(nativeWorkerProvider)),
+);
+
+final studioFrameLoaderProvider = Provider<StudioFrameLoader?>(
+  (ref) => null,
+);

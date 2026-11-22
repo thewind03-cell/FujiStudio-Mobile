@@ -36,6 +36,95 @@ class FujiStudioBindings {
   late final _fs_core_version = _fs_core_versionPtr
       .asFunction<ffi.Pointer<ffi.Char> Function()>();
 
+  /// Analyzes shadow luma distribution of an RGBA8888 buffer for 1-tap Auto Rescue.
+  int fs_dna_rescue_analyze_rgba(
+    ffi.Pointer<ffi.Uint8> input_rgba,
+    int input_len,
+    int width,
+    int height,
+    ffi.Pointer<FsDnaRescueSuggestion> out_suggestion,
+  ) {
+    return _fs_dna_rescue_analyze_rgba(
+      input_rgba,
+      input_len,
+      width,
+      height,
+      out_suggestion,
+    );
+  }
+
+  late final _fs_dna_rescue_analyze_rgbaPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<FsDnaRescueSuggestion>,
+          )
+        >
+      >('fs_dna_rescue_analyze_rgba');
+  late final _fs_dna_rescue_analyze_rgba = _fs_dna_rescue_analyze_rgbaPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          int,
+          int,
+          ffi.Pointer<FsDnaRescueSuggestion>,
+        )
+      >();
+
+  /// Applies DNA-Aware Shadow Rescue into caller-allocated `out_rgba`
+  /// (supports both in-place `out_rgba == input_rgba` and separate buffers).
+  int fs_dna_rescue_apply_rgba_into(
+    ffi.Pointer<ffi.Uint8> input_rgba,
+    int input_len,
+    int width,
+    int height,
+    ffi.Pointer<FsDnaRescueParams> params,
+    ffi.Pointer<ffi.Uint8> out_rgba,
+    int out_len,
+  ) {
+    return _fs_dna_rescue_apply_rgba_into(
+      input_rgba,
+      input_len,
+      width,
+      height,
+      params,
+      out_rgba,
+      out_len,
+    );
+  }
+
+  late final _fs_dna_rescue_apply_rgba_intoPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<FsDnaRescueParams>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+          )
+        >
+      >('fs_dna_rescue_apply_rgba_into');
+  late final _fs_dna_rescue_apply_rgba_into = _fs_dna_rescue_apply_rgba_intoPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          int,
+          int,
+          ffi.Pointer<FsDnaRescueParams>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >();
+
   /// Releases a buffer previously allocated by the FujiStudio C++ core.
   /// Passing NULL is a safe no-op.
   void fs_free_buffer(ffi.Pointer<ffi.Uint8> ptr) {
@@ -258,6 +347,89 @@ const int FS_RAF_MIN_HEADER_BYTES = 92;
 
 const int FS_RAF_MIN_JPEG_BYTES = 128;
 
+enum FsDnaRescueMode {
+  FS_DNA_MODE_SOOC_SAFE(0),
+  FS_DNA_MODE_DEEP_RESCUE(1);
+
+  final int value;
+  const FsDnaRescueMode(this.value);
+
+  static FsDnaRescueMode fromValue(int value) => switch (value) {
+    0 => FS_DNA_MODE_SOOC_SAFE,
+    1 => FS_DNA_MODE_DEEP_RESCUE,
+    _ => throw ArgumentError('Unknown value for FsDnaRescueMode: $value'),
+  };
+}
+
+/// Normalized input parameters (20 bytes, explicit 4-byte alignment).
+final class FsDnaRescueParams extends ffi.Struct {
+  @ffi.Float()
+  external double shadow_lift;
+
+  @ffi.Float()
+  external double midtone_anchor;
+
+  @ffi.Float()
+  external double highlight_protect;
+
+  @ffi.Int32()
+  external int mode;
+
+  @ffi.Int32()
+  external int enabled;
+
+  static ffi.Pointer<FsDnaRescueParams> $allocate(
+    ffi.Allocator $allocator, {
+    required double shadow_lift,
+    required double midtone_anchor,
+    required double highlight_protect,
+    required int mode,
+    required int enabled,
+  }) => $allocator<FsDnaRescueParams>()
+    ..ref.shadow_lift = shadow_lift
+    ..ref.midtone_anchor = midtone_anchor
+    ..ref.highlight_protect = highlight_protect
+    ..ref.mode = mode
+    ..ref.enabled = enabled;
+}
+
+/// Auto-analyze suggestion output (24 bytes).
+final class FsDnaRescueSuggestion extends ffi.Struct {
+  @ffi.Float()
+  external double recommended_shadow_lift;
+
+  @ffi.Float()
+  external double p10_luma;
+
+  @ffi.Float()
+  external double p50_luma;
+
+  @ffi.Float()
+  external double p95_luma;
+
+  @ffi.Float()
+  external double shadow_pixel_ratio;
+
+  @ffi.Int32()
+  external int recommended_mode;
+
+  static ffi.Pointer<FsDnaRescueSuggestion> $allocate(
+    ffi.Allocator $allocator, {
+    required double recommended_shadow_lift,
+    required double p10_luma,
+    required double p50_luma,
+    required double p95_luma,
+    required double shadow_pixel_ratio,
+    required int recommended_mode,
+  }) => $allocator<FsDnaRescueSuggestion>()
+    ..ref.recommended_shadow_lift = recommended_shadow_lift
+    ..ref.p10_luma = p10_luma
+    ..ref.p50_luma = p50_luma
+    ..ref.p95_luma = p95_luma
+    ..ref.shadow_pixel_ratio = shadow_pixel_ratio
+    ..ref.recommended_mode = recommended_mode;
+}
+
 enum FsExifOrientation {
   FS_ORIENTATION_NORMAL(1),
   FS_ORIENTATION_FLIP_H(2),
@@ -330,7 +502,8 @@ enum FsStatusCode {
   FS_ERR_RAF_JPEG_TOO_LARGE(-16),
   FS_ERR_JPEG_INVALID_SOI(-17),
   FS_ERR_JPEG_INVALID_EOI(-18),
-  FS_ERR_UNSUPPORTED_PLATFORM(-19);
+  FS_ERR_UNSUPPORTED_PLATFORM(-19),
+  FS_ERR_INVALID_PARAMS(-20);
 
   final int value;
   const FsStatusCode(this.value);
@@ -351,6 +524,7 @@ enum FsStatusCode {
     -17 => FS_ERR_JPEG_INVALID_SOI,
     -18 => FS_ERR_JPEG_INVALID_EOI,
     -19 => FS_ERR_UNSUPPORTED_PLATFORM,
+    -20 => FS_ERR_INVALID_PARAMS,
     _ => throw ArgumentError('Unknown value for FsStatusCode: $value'),
   };
 }
