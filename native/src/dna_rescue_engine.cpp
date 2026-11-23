@@ -51,8 +51,11 @@ void apply_dna_rescue_scalar_range(
     float s,
     float a,
     float h,
-    float c_max) noexcept {
+    float c_max,
+    float skin_protect) noexcept {
   constexpr float kInv255 = 1.0f / 255.0f;
+  constexpr float kInvCbRadius = 1.0f / 0.11f;
+  constexpr float kInvCrRadius = 1.0f / 0.09f;
   const float h_lo = std::max(a, h - 0.15f);
   const float h_span = h - h_lo;
 
@@ -105,7 +108,17 @@ void apply_dna_rescue_scalar_range(
     const float y_out = std::clamp(y * gain, 0.0f, 1.0f);
     const float gain_clamped = std::max(gain, 1.0f);
     const float damp_factor = std::clamp(1.0f - 1.0f / gain_clamped, 0.0f, 1.0f);
-    const float chroma_damp = 1.0f - 0.03f * damp_factor;
+
+    // Smooth YCbCr skin-locus chroma protection modulated by skin_protect [0..1].
+    const float cb = -0.168736f * r - 0.331264f * g + 0.500000f * b + 0.5f;
+    const float cr =  0.500000f * r - 0.418688f * g - 0.081312f * b + 0.5f;
+    const float d_cb = (cb - 0.43f) * kInvCbRadius;
+    const float d_cr = (cr - 0.58f) * kInvCrRadius;
+    const float dist2 = d_cb * d_cb + d_cr * d_cr;
+    const float skin_t = std::clamp(1.0f - dist2, 0.0f, 1.0f);
+    const float skin_weight = skin_t * skin_t * (3.0f - 2.0f * skin_t);
+    const float chroma_damp =
+        1.0f - (0.03f + 0.22f * skin_protect * skin_weight) * damp_factor;
 
     const float r_out =
         std::clamp(y_out + (r * gain - y_out) * chroma_damp, 0.0f, 1.0f);
@@ -130,6 +143,7 @@ inline void neon_process_4_pixels(
     float a,
     float h,
     float c_max,
+    float skin_protect,
     uint16x4_t* out_r16,
     uint16x4_t* out_g16,
     uint16x4_t* out_b16) noexcept {
@@ -198,8 +212,37 @@ inline void neon_process_4_pixels(
   const float32x4_t damp_factor = vminq_f32(
       v_one,
       vmaxq_f32(v_zero, vsubq_f32(v_one, vdivq_f32(v_one, gain_clamped))));
+
+  const float32x4_t cb = vfmaq_f32(
+      vfmaq_f32(
+          vfmaq_f32(v_half, vdupq_n_f32(-0.168736f), r),
+          vdupq_n_f32(-0.331264f),
+          g),
+      vdupq_n_f32(0.500000f),
+      b);
+  const float32x4_t cr = vfmaq_f32(
+      vfmaq_f32(
+          vfmaq_f32(v_half, vdupq_n_f32(0.500000f), r),
+          vdupq_n_f32(-0.418688f),
+          g),
+      vdupq_n_f32(-0.081312f),
+      b);
+  const float32x4_t d_cb =
+      vmulq_f32(vsubq_f32(cb, vdupq_n_f32(0.43f)), vdupq_n_f32(1.0f / 0.11f));
+  const float32x4_t d_cr =
+      vmulq_f32(vsubq_f32(cr, vdupq_n_f32(0.58f)), vdupq_n_f32(1.0f / 0.09f));
+  const float32x4_t dist2 = vfmaq_f32(vmulq_f32(d_cb, d_cb), d_cr, d_cr);
+  const float32x4_t skin_t =
+      vminq_f32(v_one, vmaxq_f32(v_zero, vsubq_f32(v_one, dist2)));
+  const float32x4_t skin_weight = vmulq_f32(
+      vmulq_f32(skin_t, skin_t),
+      vsubq_f32(vdupq_n_f32(3.0f), vmulq_f32(vdupq_n_f32(2.0f), skin_t)));
+  const float32x4_t total_damp_coeff = vfmaq_f32(
+      vdupq_n_f32(0.03f),
+      vdupq_n_f32(0.22f * skin_protect),
+      skin_weight);
   const float32x4_t chroma_damp =
-      vsubq_f32(v_one, vmulq_f32(vdupq_n_f32(0.03f), damp_factor));
+      vsubq_f32(v_one, vmulq_f32(total_damp_coeff, damp_factor));
 
   auto finish_chan = [&](float32x4_t c, uint32x4_t orig_u32) -> uint16x4_t {
     const float32x4_t lifted = vmulq_f32(c, gain);
@@ -224,7 +267,8 @@ void apply_dna_rescue_neon(
     float s,
     float a,
     float h,
-    float c_max) noexcept {
+    float c_max,
+    float skin_protect) noexcept {
   const size_t vec_pixels = (pixel_count / 8u) * 8u;
   for (size_t idx = 0; idx < vec_pixels; idx += 8u) {
     const size_t byte_off = idx * 4u;
@@ -245,6 +289,7 @@ void apply_dna_rescue_neon(
         a,
         h,
         c_max,
+        skin_protect,
         &r_lo,
         &g_lo,
         &b_lo);
@@ -256,6 +301,7 @@ void apply_dna_rescue_neon(
         a,
         h,
         c_max,
+        skin_protect,
         &r_hi,
         &g_hi,
         &b_hi);
@@ -277,7 +323,8 @@ void apply_dna_rescue_neon(
         s,
         a,
         h,
-        c_max);
+        c_max,
+        skin_protect);
   }
 }
 #endif
@@ -310,7 +357,8 @@ FS_API int32_t fs_dna_rescue_apply_rgba_into(
 
     if (!std::isfinite(params->shadow_lift) ||
         !std::isfinite(params->midtone_anchor) ||
-        !std::isfinite(params->highlight_protect)) {
+        !std::isfinite(params->highlight_protect) ||
+        !std::isfinite(params->skin_protect)) {
       return FS_ERR_INVALID_PARAMS;
     }
     if (params->mode != FS_DNA_MODE_SOOC_SAFE &&
@@ -321,6 +369,7 @@ FS_API int32_t fs_dna_rescue_apply_rgba_into(
     const float s = std::clamp(params->shadow_lift, 0.0f, 1.0f);
     const float a = std::clamp(params->midtone_anchor, 0.35f, 0.75f);
     const float h = std::clamp(params->highlight_protect, 0.75f, 0.98f);
+    const float skin_protect = std::clamp(params->skin_protect, 0.0f, 1.0f);
 
     if (params->enabled == 0 || s <= 0.0f) {
       if (out_rgba != input_rgba) {
@@ -334,7 +383,8 @@ FS_API int32_t fs_dna_rescue_apply_rgba_into(
     const size_t pixel_count = byte_len / 4u;
 
 #if FS_HAS_ARM64_NEON
-    apply_dna_rescue_neon(input_rgba, out_rgba, pixel_count, s, a, h, c_max);
+    apply_dna_rescue_neon(
+        input_rgba, out_rgba, pixel_count, s, a, h, c_max, skin_protect);
 #else
     apply_dna_rescue_scalar_range(
         input_rgba,
@@ -344,7 +394,8 @@ FS_API int32_t fs_dna_rescue_apply_rgba_into(
         s,
         a,
         h,
-        c_max);
+        c_max,
+        skin_protect);
 #endif
     return FS_OK;
   } catch (...) {

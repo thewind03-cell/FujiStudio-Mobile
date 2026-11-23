@@ -48,12 +48,15 @@ abstract final class DnaRescueMapper {
   /// Normalizes [spec] (`shadow_lift` in `0..100`) to C++20 ABI `[0.0, 1.0]`.
   static DnaRescueNativeParams toNativeParams(DnaRescueSpec spec) {
     final normalizedLift = (spec.shadowLift / 100.0).clamp(0.0, 1.0);
+    final skinProtect =
+        spec.skinProtect.isFinite ? spec.skinProtect.clamp(0.0, 1.0) : 0.0;
     return DnaRescueNativeParams(
       shadowLift: normalizedLift,
       midtoneAnchor: readMidtoneAnchor(spec),
       highlightProtect: readHighlightProtect(spec),
       mode: readMode(spec),
       enabled: spec.enabled,
+      skinProtect: skinProtect,
     );
   }
 

@@ -2,8 +2,10 @@ package org.fujistudio.mobile
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.ContentUris
 import android.content.ContentValues
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -14,6 +16,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.provider.MediaStore
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -182,6 +185,28 @@ class StorageGatewayChannel(
                 ioExecutor.execute {
                     runOnResult(result) {
                         ensureExportTempDir().absolutePath
+                    }
+                }
+            }
+            "getAvailableExportSpaceBytes" -> {
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        getAvailableExportSpaceBytes()
+                    }
+                }
+            }
+            "getDeviceTotalRamBytes" -> {
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        getDeviceTotalRamBytes()
+                    }
+                }
+            }
+            "cleanOrphanExportTempFiles" -> {
+                val olderThanSeconds = call.argument<Int>("olderThanSeconds") ?: 3600
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        cleanOrphanExportTempFiles(olderThanSeconds)
                     }
                 }
             }
@@ -708,6 +733,80 @@ class StorageGatewayChannel(
         return dir
     }
 
+    private fun getAvailableExportSpaceBytes(): Long {
+        val stat = StatFs(activity.cacheDir.absolutePath)
+        return stat.availableBytes
+    }
+
+    private fun getDeviceTotalRamBytes(): Long {
+        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (am != null) {
+            val info = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(info)
+            if (info.totalMem > 0L) {
+                return info.totalMem
+            }
+        }
+        return 8L * 1024L * 1024L * 1024L
+    }
+
+    private fun cleanOrphanExportTempFiles(olderThanSeconds: Int): Int {
+        var cleaned = 0
+        val exportTmpDir = ensureExportTempDir()
+        exportTmpDir.listFiles()?.forEach { file ->
+            if (file.isFile && runCatching { file.delete() }.getOrDefault(false)) {
+                cleaned += 1
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val safeAgeSec = max(60, olderThanSeconds).toLong()
+            val cutoffEpochSec = (System.currentTimeMillis() / 1000L) - safeAgeSec
+            val resolver = activity.contentResolver
+            val pendingUri = MediaStore.setIncludePending(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            )
+            val projection = arrayOf(MediaStore.MediaColumns._ID)
+            val selection = "${MediaStore.MediaColumns.IS_PENDING} = 1 " +
+                "AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? " +
+                "AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? " +
+                "AND ${MediaStore.MediaColumns.DATE_ADDED} < ?"
+            val selectionArgs = arrayOf(
+                activity.packageName,
+                "${Environment.DIRECTORY_PICTURES}/FujiStudio%",
+                cutoffEpochSec.toString(),
+            )
+
+            runCatching {
+                resolver.query(
+                    pendingUri,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    null,
+                )?.use { cursor ->
+                    val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                    if (idIdx >= 0) {
+                        while (cursor.moveToNext()) {
+                            val id = cursor.getLong(idIdx)
+                            val rowUri = ContentUris.withAppendedId(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                id,
+                            )
+                            val deleted = runCatching {
+                                resolver.delete(rowUri, null, null)
+                            }.getOrDefault(0)
+                            if (deleted > 0) {
+                                cleaned += deleted
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return cleaned
+    }
+
     private fun transformBitmapOrientationOnly(src: Bitmap, orientation: Int): Bitmap {
         val matrix = Matrix()
         when (orientation) {
@@ -754,6 +853,9 @@ class StorageGatewayChannel(
         if (maxDecodeLongEdge > 0) {
             val rawLongEdge = max(rawW, rawH)
             while ((rawLongEdge / (inSampleSize * 2)) >= maxDecodeLongEdge) {
+                inSampleSize *= 2
+            }
+            if (maxDecodeLongEdge <= 4608 && (rawLongEdge / inSampleSize) > 4608) {
                 inSampleSize *= 2
             }
         }

@@ -54,6 +54,7 @@ final class BatchExportState {
     this.cancelledCount = 0,
     this.currentIndex = 0,
     this.currentFileName,
+    this.errorMessage,
     List<BatchExportItemOutcome> outcomes = const <BatchExportItemOutcome>[],
   }) : outcomes = List<BatchExportItemOutcome>.unmodifiable(outcomes);
 
@@ -66,6 +67,7 @@ final class BatchExportState {
   final int cancelledCount;
   final int currentIndex;
   final String? currentFileName;
+  final String? errorMessage;
   final List<BatchExportItemOutcome> outcomes;
 
   int get processedCount => completedCount + failedCount;
@@ -85,6 +87,7 @@ final class BatchExportState {
     int? cancelledCount,
     int? currentIndex,
     Object? currentFileName = _unset,
+    Object? errorMessage = _unset,
     List<BatchExportItemOutcome>? outcomes,
   }) {
     return BatchExportState(
@@ -99,6 +102,9 @@ final class BatchExportState {
       currentFileName: identical(currentFileName, _unset)
           ? this.currentFileName
           : currentFileName as String?,
+      errorMessage: identical(errorMessage, _unset)
+          ? this.errorMessage
+          : errorMessage as String?,
       outcomes: outcomes ?? this.outcomes,
     );
   }
@@ -162,11 +168,7 @@ final class BatchExportController extends ChangeNotifier {
       return _state;
     }
 
-    final outcomes = <BatchExportItemOutcome>[];
-    var completed = 0;
-    var failed = 0;
-    var cancelled = 0;
-
+    _cancelled = false;
     _state = BatchExportState(
       isRunning: true,
       isCancelled: false,
@@ -179,6 +181,41 @@ final class BatchExportController extends ChangeNotifier {
       currentFileName: targets.first.pairedAsset.displayName,
     );
     notifyListeners();
+
+    try {
+      await _exportService.ensureSufficientStorageSpace(itemCount: total);
+    } catch (error) {
+      if (_disposed) return _state;
+      final message = error.toString();
+      _state = BatchExportState(
+        isRunning: false,
+        isCancelled: false,
+        isDone: true,
+        totalCount: total,
+        completedCount: 0,
+        failedCount: total,
+        cancelledCount: 0,
+        currentIndex: 0,
+        currentFileName: null,
+        errorMessage: message,
+        outcomes: <BatchExportItemOutcome>[
+          for (final target in targets)
+            BatchExportItemOutcome(
+              itemId: target.itemId,
+              fileName: target.pairedAsset.displayName,
+              status: BatchExportItemStatus.failed,
+              errorMessage: message,
+            ),
+        ],
+      );
+      notifyListeners();
+      return _state;
+    }
+
+    final outcomes = <BatchExportItemOutcome>[];
+    var completed = 0;
+    var failed = 0;
+    var cancelled = 0;
 
     for (var i = 0; i < total; i++) {
       if (_cancelled || _disposed) {

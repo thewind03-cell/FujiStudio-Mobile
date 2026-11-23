@@ -178,6 +178,16 @@ final class _GeoStorageGateway implements StorageGateway {
   Future<String> getExportTempDirectory() async => '$proxyDir/export_tmp';
 
   @override
+  Future<int> getAvailableExportSpaceBytes() async => 4 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> getDeviceTotalRamBytes() async => 8 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600}) async =>
+      0;
+
+  @override
   Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
     required String source,
     required bool isContentUri,

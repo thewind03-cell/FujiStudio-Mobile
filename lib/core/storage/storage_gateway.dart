@@ -144,6 +144,12 @@ abstract interface class StorageGateway {
 
   Future<String> getExportTempDirectory();
 
+  Future<int> getAvailableExportSpaceBytes();
+
+  Future<int> getDeviceTotalRamBytes();
+
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600});
+
   Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
     required String source,
     required bool isContentUri,

@@ -45,6 +45,7 @@ final class _SmokeStorageGateway implements StorageGateway {
   final String exportTmpDir;
   final List<RawMediaFileDescriptor> files;
   int _exportSeq = 0;
+  int cleanOrphanCalls = 0;
 
   @override
   Future<StoragePermissionState> getPermissionState() async =>
@@ -103,6 +104,18 @@ final class _SmokeStorageGateway implements StorageGateway {
 
   @override
   Future<String> getExportTempDirectory() async => exportTmpDir;
+
+  @override
+  Future<int> getAvailableExportSpaceBytes() async => 4 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> getDeviceTotalRamBytes() async => 8 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600}) async {
+    cleanOrphanCalls++;
+    return 0;
+  }
 
   @override
   Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
@@ -763,6 +776,7 @@ void main() {
           Directory(storageGateway.exportTmpDir).listSync(followLinks: false),
           isEmpty,
         );
+        expect(storageGateway.cleanOrphanCalls, greaterThanOrEqualTo(1));
 
         await tester.pump(const Duration(seconds: 15));
         await tester.pumpWidget(const SizedBox.shrink());

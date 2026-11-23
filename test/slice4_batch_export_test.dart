@@ -36,6 +36,10 @@ final class _BatchFakeStorageGateway implements StorageGateway {
   int encodeCalls = 0;
   int openedFdCount = 0;
   int closedFdCount = 0;
+  int availableSpaceBytes = 4 * 1024 * 1024 * 1024;
+  int deviceTotalRamBytes = 8 * 1024 * 1024 * 1024;
+  int cleanOrphanCalls = 0;
+  int? lastCleanOlderThanSeconds;
   final List<int> requestedDecodeLongEdges = <int>[];
   final List<String> savedDisplayNames = <String>[];
   final Set<String> activeFdHandles = <String>{};
@@ -132,6 +136,19 @@ final class _BatchFakeStorageGateway implements StorageGateway {
 
   @override
   Future<String> getExportTempDirectory() async => exportTmpDir;
+
+  @override
+  Future<int> getAvailableExportSpaceBytes() async => availableSpaceBytes;
+
+  @override
+  Future<int> getDeviceTotalRamBytes() async => deviceTotalRamBytes;
+
+  @override
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600}) async {
+    cleanOrphanCalls++;
+    lastCleanOlderThanSeconds = olderThanSeconds;
+    return 0;
+  }
 
   @override
   Future<StoragePermissionState> getPermissionState() async =>
@@ -629,6 +646,132 @@ void main() {
           Directory(gateway.exportTmpDir).listSync(followLinks: false),
           isEmpty,
         );
+      },
+    );
+
+    test(
+      'rejects batch export immediately when StatFs available space is below max(150 MB, N * 60 MB)',
+      () async {
+        // 10 items require max(150 MB, 10 * 60 MB) = 600 MB.
+        gateway.availableSpaceBytes = 500 * 1024 * 1024;
+
+        final batchController = BatchExportController(
+          exportService: exportService,
+        );
+        addTearDown(batchController.dispose);
+
+        final targets = <BatchExportTarget>[
+          for (final id in sessionController.state.galleryOrderedItemIds)
+            BatchExportTarget(
+              itemId: id,
+              pairedAsset: sessionController.pairedAssetForItem(id)!,
+              recipe: sessionController.editRecipeForItem(id)!,
+            ),
+        ];
+
+        final finalState = await batchController.startBatch(
+          targets: targets,
+          albumKey: sessionController.currentAlbumKey,
+        );
+
+        expect(finalState.isRunning, isFalse);
+        expect(finalState.isDone, isTrue);
+        expect(finalState.completedCount, equals(0));
+        expect(finalState.failedCount, equals(10));
+        expect(finalState.errorMessage, contains('Không đủ dung lượng trống'));
+        expect(gateway.decodeCalls, equals(0));
+        expect(gateway.encodeCalls, equals(0));
+
+        // Single export requires >= 150 MB.
+        gateway.availableSpaceBytes = 100 * 1024 * 1024;
+        final singleId = sessionController.state.galleryOrderedItemIds.first;
+        await expectLater(
+          exportService.exportSingleItem(itemId: singleId),
+          throwsA(isA<ExportInsufficientSpaceException>()),
+        );
+        expect(gateway.decodeCalls, equals(0));
+      },
+    );
+
+    test(
+      'clamps decode ceiling <= 4608px for 40MP (7728x5152) deep crop on 6 GB RAM device',
+      () async {
+        const sixGbRam = 6 * 1024 * 1024 * 1024;
+        final deepCropGeom = GeometrySpec(
+          rotationDeg: 2.0,
+          aspectRatio: '4:5',
+          cropBox: const <double>[0.30, 0.30, 0.40, 0.40],
+        );
+
+        expect(
+          SocialExportService.computeDecodeLongEdge(
+            targetMaxLongEdge: 2048,
+            geometry: deepCropGeom,
+            deviceTotalRamBytes: sixGbRam,
+          ),
+          lessThanOrEqualTo(4608),
+        );
+        expect(
+          SocialExportService.computeDecodeLongEdge(
+            targetMaxLongEdge: 0,
+            geometry: GeometrySpec(rotationDeg: 0.0),
+            deviceTotalRamBytes: sixGbRam,
+          ),
+          lessThanOrEqualTo(4608),
+        );
+
+        gateway.deviceTotalRamBytes = sixGbRam;
+        final sensor40MpPair = PairedAsset(
+          pairKey: 'dcim|dscf_40mp',
+          stem: 'DSCF_40MP',
+          normalizedDir: 'dcim',
+          kind: AssetPairKind.jpgOnly,
+          primaryAsset: const RawMediaFileDescriptor(
+            mediaId: 'm_40mp',
+            uri: '/storage/emulated/0/DCIM/100_FUJI/DSCF_40MP.JPG',
+            displayName: 'DSCF_40MP.JPG',
+            relativePath: 'DCIM/100_FUJI/',
+            mimeType: 'image/jpeg',
+            sizeBytes: 24000000,
+            dateTakenMs: 200000,
+            dateModifiedSec: 200,
+            width: 7728,
+            height: 5152,
+          ),
+          capturedAtMs: 200000,
+        );
+
+        await exportService.exportSingleItem(
+          itemId: 'item_40mp',
+          pairedAsset: sensor40MpPair,
+          recipe: EditRecipe(
+            dnaRescue: DnaRescueSpec(enabled: false, shadowLift: 0.0),
+            geometry: deepCropGeom,
+            lut: LutSpec(enabled: false, intensity: 0.0),
+            exportProfile: ExportMapper.applyPreset(
+              ExportProfileSpec(format: 'jpeg', quality: 92, maxLongEdgePx: 2048),
+              SocialExportPreset.facebook2048,
+            ),
+          ),
+        );
+
+        expect(gateway.requestedDecodeLongEdges.single, lessThanOrEqualTo(4608));
+      },
+    );
+
+    test(
+      'startup cleanup invokes MediaStore IS_PENDING cleaner and removes orphan export_tmp files',
+      () async {
+        final orphan = File(
+          '${gateway.exportTmpDir}${Platform.pathSeparator}boot_orphan.tmp',
+        )..writeAsBytesSync(const <int>[9, 8, 7]);
+        expect(orphan.existsSync(), isTrue);
+
+        await exportService.cleanupOrphanTempFiles();
+
+        expect(orphan.existsSync(), isFalse);
+        expect(gateway.cleanOrphanCalls, equals(1));
+        expect(gateway.lastCleanOlderThanSeconds, equals(3600));
       },
     );
   });

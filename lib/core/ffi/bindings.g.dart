@@ -800,7 +800,7 @@ enum FsDnaRescueMode {
   };
 }
 
-/// Normalized input parameters (20 bytes, explicit 4-byte alignment).
+/// Normalized input parameters (24 bytes, explicit 4-byte alignment).
 final class FsDnaRescueParams extends ffi.Struct {
   @ffi.Float()
   external double shadow_lift;
@@ -817,6 +817,9 @@ final class FsDnaRescueParams extends ffi.Struct {
   @ffi.Int32()
   external int enabled;
 
+  @ffi.Float()
+  external double skin_protect;
+
   static ffi.Pointer<FsDnaRescueParams> $allocate(
     ffi.Allocator $allocator, {
     required double shadow_lift,
@@ -824,12 +827,14 @@ final class FsDnaRescueParams extends ffi.Struct {
     required double highlight_protect,
     required int mode,
     required int enabled,
+    required double skin_protect,
   }) => $allocator<FsDnaRescueParams>()
     ..ref.shadow_lift = shadow_lift
     ..ref.midtone_anchor = midtone_anchor
     ..ref.highlight_protect = highlight_protect
     ..ref.mode = mode
-    ..ref.enabled = enabled;
+    ..ref.enabled = enabled
+    ..ref.skin_protect = skin_protect;
 }
 
 /// Auto-analyze suggestion output (24 bytes).

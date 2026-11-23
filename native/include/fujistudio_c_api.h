@@ -158,13 +158,14 @@ typedef enum FsDnaRescueMode {
   FS_DNA_MODE_DEEP_RESCUE = 1
 } FsDnaRescueMode;
 
-/** Normalized input parameters (20 bytes, explicit 4-byte alignment). */
+/** Normalized input parameters (24 bytes, explicit 4-byte alignment). */
 typedef struct FsDnaRescueParams {
   float   shadow_lift;
   float   midtone_anchor;
   float   highlight_protect;
   int32_t mode;
   int32_t enabled;
+  float   skin_protect;
 } FsDnaRescueParams;
 
 /** Auto-analyze suggestion output (24 bytes). */

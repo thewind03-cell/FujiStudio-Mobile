@@ -34,6 +34,7 @@ final class DnaRescueNativeParams {
     this.highlightProtect = 0.90,
     this.mode = 0,
     this.enabled = true,
+    this.skinProtect = 0.0,
   });
 
   final double shadowLift;
@@ -41,6 +42,7 @@ final class DnaRescueNativeParams {
   final double highlightProtect;
   final int mode;
   final bool enabled;
+  final double skinProtect;
 }
 
 /// Result returned by [NativeWorker.renderStudioSurface].
@@ -1451,7 +1453,8 @@ _StudioRenderPayload _executeRenderStudioSurface(
     ..midtone_anchor = request.params.midtoneAnchor
     ..highlight_protect = request.params.highlightProtect
     ..mode = request.params.mode
-    ..enabled = request.params.enabled ? 1 : 0;
+    ..enabled = request.params.enabled ? 1 : 0
+    ..skin_protect = request.params.skinProtect;
 
   final sw = Stopwatch()..start();
   final rc = bindings.fs_dna_rescue_apply_rgba_into(
@@ -1957,7 +1960,8 @@ ExportRgbaResult _executeRunExportPipeline(
         ..ref.midtone_anchor = dna.midtoneAnchor
         ..ref.highlight_protect = dna.highlightProtect
         ..ref.mode = dna.mode
-        ..ref.enabled = 1;
+        ..ref.enabled = 1
+        ..ref.skin_protect = dna.skinProtect;
       final rc = bindings.fs_dna_rescue_apply_rgba_into(
         bufA,
         curBytes,
@@ -2256,7 +2260,8 @@ ExportRgbaResult _executeRenderCollageToRawFile(
           ..midtone_anchor = dna.midtoneAnchor
           ..highlight_protect = dna.highlightProtect
           ..mode = dna.mode
-          ..enabled = 1;
+          ..enabled = 1
+          ..skin_protect = dna.skinProtect;
         final dnaRc = bindings.fs_dna_rescue_apply_rgba_into(
           ptr,
           slotBytes,

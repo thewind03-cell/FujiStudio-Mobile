@@ -312,7 +312,7 @@ void test_chained_pipeline_smoke() {
   std::vector<uint8_t> buf = make_synthetic_rgba(kSrcW, kSrcH, 0xC4A19E00ULL);
 
   // 1. DNA Rescue in-place
-  FsDnaRescueParams dna{0.40f, 0.55f, 0.90f, FS_DNA_MODE_SOOC_SAFE, 1};
+  FsDnaRescueParams dna{0.40f, 0.55f, 0.90f, FS_DNA_MODE_SOOC_SAFE, 1, 0.75f};
   FS_CHECK(fs_dna_rescue_apply_rgba_into(
                buf.data(), buf.size(), kSrcW, kSrcH, &dna,
                buf.data(), buf.size()) == FS_OK);
