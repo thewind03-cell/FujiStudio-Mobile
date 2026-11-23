@@ -113,6 +113,23 @@ final class NativeWorkerSocialExportPipeline
   }
 }
 
+/// Thrown before starting an export when free device storage falls below the
+/// safety threshold (`max(150 MB, N * 60 MB)`).
+final class ExportInsufficientSpaceException implements Exception {
+  const ExportInsufficientSpaceException({
+    required this.requiredBytes,
+    required this.availableBytes,
+    required this.message,
+  });
+
+  final int requiredBytes;
+  final int availableBytes;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Output summary returned after a successful single-item or collage export.
 @immutable
 final class SocialExportResult {
@@ -178,6 +195,12 @@ final class SocialExportService {
        _nativePipeline =
            nativePipeline ?? NativeWorkerSocialExportPipeline(nativeWorker!);
 
+  static const int minSingleExportFreeSpaceBytes = 150 * 1024 * 1024;
+  static const int perBatchItemFreeSpaceBytes = 60 * 1024 * 1024;
+  static const int lowRamThresholdBytes = 8 * 1024 * 1024 * 1024;
+  static const int lowRamMaxDecodeLongEdge = 4608;
+  static const int highRamMaxDecodeLongEdge = 7728;
+
   final StorageGateway _storageGateway;
   final SocialExportNativePipeline _nativePipeline;
   final MobileExportLogStore _exportLogStore;
@@ -186,20 +209,57 @@ final class SocialExportService {
   int _tempSeq = 0;
   int _activeExports = 0;
   bool _orphansCleaned = false;
+  int? _cachedTotalRamBytes;
+
+  static int requiredFreeSpaceBytesForCount(int itemCount) {
+    final safeCount = math.max(1, itemCount);
+    return math.max(
+      minSingleExportFreeSpaceBytes,
+      safeCount * perBatchItemFreeSpaceBytes,
+    );
+  }
+
+  /// Verifies free storage via [StorageGateway.getAvailableExportSpaceBytes]
+  /// against `max(150 MB, itemCount * 60 MB)` before decoding or exporting.
+  Future<void> ensureSufficientStorageSpace({int itemCount = 1}) async {
+    final requiredBytes = requiredFreeSpaceBytesForCount(itemCount);
+    final availableBytes = await _storageGateway.getAvailableExportSpaceBytes();
+    if (availableBytes < requiredBytes) {
+      final requiredMb = (requiredBytes / (1024 * 1024)).ceil();
+      final availableMb = (availableBytes / (1024 * 1024)).floor();
+      throw ExportInsufficientSpaceException(
+        requiredBytes: requiredBytes,
+        availableBytes: availableBytes,
+        message:
+            'Không đủ dung lượng trống để xuất ảnh (cần tối thiểu $requiredMb MB, hiện còn $availableMb MB).',
+      );
+    }
+  }
+
+  Future<int> _getDeviceTotalRamBytes() async {
+    return _cachedTotalRamBytes ??=
+        await _storageGateway.getDeviceTotalRamBytes();
+  }
 
   /// Computes the required source decode long edge for [targetMaxLongEdge]
   /// (`0` means full native resolution) and [geometry] (`crop_box` / rotation).
   ///
   /// Ensures uncropped 2048px exports decode at least `2400px` and heavily
-  /// cropped images decode up to `6240px` so post-crop pixels still reach
-  /// `2048px` without ever using the `1600px` grid proxy.
+  /// cropped images decode up to `7728px` on `>= 8 GB` RAM devices, while
+  /// clamping strictly to `<= 4608px` on `< 8 GB` RAM devices to avoid 40MP OOM.
   @visibleForTesting
   static int computeDecodeLongEdge({
     required int targetMaxLongEdge,
     required GeometrySpec geometry,
+    int deviceTotalRamBytes = lowRamThresholdBytes,
   }) {
+    final isLowRam =
+        deviceTotalRamBytes > 0 && deviceTotalRamBytes < lowRamThresholdBytes;
+    final maxAllowedEdge =
+        isLowRam ? lowRamMaxDecodeLongEdge : highRamMaxDecodeLongEdge;
+
     if (targetMaxLongEdge <= 0) {
-      return 0;
+      return isLowRam ? lowRamMaxDecodeLongEdge : 0;
     }
 
     final box = GeometryMapper.normBoxFromSpec(geometry);
@@ -210,32 +270,40 @@ final class SocialExportService {
     final isCropped =
         !GeometryMapper.isFullBox(box) || geometry.aspectRatio != null;
 
+    final int rawTarget;
     if (!isCropped && !isRotated) {
-      return math.max(targetMaxLongEdge, 2400);
+      rawTarget = math.max(targetMaxLongEdge, 2400);
+    } else {
+      final rotFactor = isRotated ? 0.85 : 1.0;
+      rawTarget = (targetMaxLongEdge / (minCropSpan * rotFactor)).ceil();
     }
-
-    final rotFactor = isRotated ? 0.85 : 1.0;
-    final needed = (targetMaxLongEdge / (minCropSpan * rotFactor)).ceil();
-    return needed.clamp(math.max(targetMaxLongEdge, 2400), 6240);
+    final minEdge = math.min(math.max(targetMaxLongEdge, 2400), maxAllowedEdge);
+    return rawTarget.clamp(minEdge, maxAllowedEdge);
   }
 
-  /// Removes any leftover orphan files inside `export_tmp/` when no export
-  /// is currently running.
+  /// Removes any leftover orphan files inside `export_tmp/` and expired
+  /// pending (`IS_PENDING = 1`) MediaStore entries when no export is active.
   Future<void> cleanupOrphanTempFiles() async {
     if (_activeExports > 0) return;
     try {
       final tempDirPath = await _storageGateway.getExportTempDirectory();
       final dir = Directory(tempDirPath);
-      if (!dir.existsSync()) return;
-      for (final entity in dir.listSync(followLinks: false)) {
-        if (entity is File) {
-          try {
-            await entity.delete();
-          } catch (_) {}
+      if (dir.existsSync()) {
+        for (final entity in dir.listSync(followLinks: false)) {
+          if (entity is File) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          }
         }
       }
     } catch (_) {
       // Best-effort orphan cleanup.
+    }
+    try {
+      await _storageGateway.cleanOrphanExportTempFiles(olderThanSeconds: 3600);
+    } catch (_) {
+      // Best-effort stale IS_PENDING cleanup.
     }
   }
 
@@ -250,40 +318,42 @@ final class SocialExportService {
     String? albumKey,
   }) async {
     await _prepareExportTempDir();
+    await ensureSufficientStorageSpace(itemCount: 1);
+    final deviceTotalRamBytes = await _getDeviceTotalRamBytes();
     _activeExports++;
-
-    final tempDirPath = await _storageGateway.getExportTempDirectory();
-    Directory(tempDirPath).createSync(recursive: true);
-
-    final resolvedPair =
-        pairedAsset ?? _sessionController.pairedAssetForItem(itemId);
-    final resolvedItem = _sessionController.sessionItemById(itemId);
-    final baseRecipe =
-        recipe ?? resolvedItem?.editRecipe ?? _defaultNeutralRecipe();
-    if (resolvedPair == null) {
-      _activeExports = math.max(0, _activeExports - 1);
-      throw StateError('Missing PairedAsset for item $itemId');
-    }
-
-    final effectiveProfile = exportProfileOverride ?? baseRecipe.exportProfile;
-    final updatedRecipe = baseRecipe.copyWith(exportProfile: effectiveProfile);
-    final nativeConfig = ExportMapper.toNativeConfig(effectiveProfile);
-
-    final seq = ++_tempSeq;
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final rawInputPath =
-        '$tempDirPath${Platform.pathSeparator}raw_in_${seq}_$stamp.rgba';
-    final rawOutputPath =
-        '$tempDirPath${Platform.pathSeparator}raw_out_${seq}_$stamp.rgba';
-    final rafTempJpegPath =
-        '$tempDirPath${Platform.pathSeparator}raf_ext_${seq}_$stamp.jpg';
-
-    final tempPathsToClean = <String>[rawInputPath, rawOutputPath];
+    final tempPathsToClean = <String>[];
 
     try {
+      final tempDirPath = await _storageGateway.getExportTempDirectory();
+      Directory(tempDirPath).createSync(recursive: true);
+
+      final resolvedPair =
+          pairedAsset ?? _sessionController.pairedAssetForItem(itemId);
+      final resolvedItem = _sessionController.sessionItemById(itemId);
+      final baseRecipe =
+          recipe ?? resolvedItem?.editRecipe ?? _defaultNeutralRecipe();
+      if (resolvedPair == null) {
+        throw StateError('Missing PairedAsset for item $itemId');
+      }
+
+      final effectiveProfile = exportProfileOverride ?? baseRecipe.exportProfile;
+      final updatedRecipe = baseRecipe.copyWith(exportProfile: effectiveProfile);
+      final nativeConfig = ExportMapper.toNativeConfig(effectiveProfile);
+
+      final seq = ++_tempSeq;
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final rawInputPath =
+          '$tempDirPath${Platform.pathSeparator}raw_in_${seq}_$stamp.rgba';
+      final rawOutputPath =
+          '$tempDirPath${Platform.pathSeparator}raw_out_${seq}_$stamp.rgba';
+      final rafTempJpegPath =
+          '$tempDirPath${Platform.pathSeparator}raf_ext_${seq}_$stamp.jpg';
+
+      tempPathsToClean.addAll(<String>[rawInputPath, rawOutputPath]);
       final maxDecodeLongEdge = computeDecodeLongEdge(
         targetMaxLongEdge: nativeConfig.maxLongEdgePx,
         geometry: updatedRecipe.geometry,
+        deviceTotalRamBytes: deviceTotalRamBytes,
       );
 
       final decoded = await _decodeAssetToRawFile(
@@ -399,18 +469,20 @@ final class SocialExportService {
     }
 
     await _prepareExportTempDir();
+    await ensureSufficientStorageSpace(itemCount: 1);
     _activeExports++;
-
-    final tempDirPath = await _storageGateway.getExportTempDirectory();
-    Directory(tempDirPath).createSync(recursive: true);
-
-    final seq = ++_tempSeq;
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final rawOutputPath =
-        '$tempDirPath${Platform.pathSeparator}collage_out_${seq}_$stamp.rgba';
-    final tempPathsToClean = <String>[rawOutputPath];
+    final tempPathsToClean = <String>[];
 
     try {
+      final tempDirPath = await _storageGateway.getExportTempDirectory();
+      Directory(tempDirPath).createSync(recursive: true);
+
+      final seq = ++_tempSeq;
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final rawOutputPath =
+          '$tempDirPath${Platform.pathSeparator}collage_out_${seq}_$stamp.rgba';
+      tempPathsToClean.add(rawOutputPath);
+
       final config = CollageMapper.toExportNativeConfig(
         spec,
         maxLongEdgePx: maxLongEdgePx,
@@ -455,6 +527,12 @@ final class SocialExportService {
             zoom: slot.zoom,
             dnaRescue: DnaRescueMapper.isEdited(item.editRecipe.dnaRescue)
                 ? DnaRescueMapper.toNativeParams(item.editRecipe.dnaRescue)
+                : null,
+            geometry: GeometryMapper.isEdited(item.editRecipe.geometry)
+                ? GeometryMapper.toNativeParams(
+                    item.editRecipe.geometry,
+                    highQuality: true,
+                  )
                 : null,
           ),
         );
@@ -582,9 +660,10 @@ final class SocialExportService {
     }
 
     final jpgUri = pairedAsset.primaryAsset.uri;
+    final isContent = jpgUri.startsWith('content://');
     final decoded = await _storageGateway.decodeSourceForExportToRawFile(
       source: jpgUri,
-      isContentUri: true,
+      isContentUri: isContent,
       outRawPath: outRawPath,
       maxDecodeLongEdge: maxDecodeLongEdge,
     );
@@ -593,7 +672,7 @@ final class SocialExportService {
       width: decoded.width,
       height: decoded.height,
       exifSource: jpgUri,
-      exifSourceIsContentUri: true,
+      exifSourceIsContentUri: isContent,
     );
   }
 

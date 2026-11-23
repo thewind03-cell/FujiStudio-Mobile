@@ -29,6 +29,7 @@ class _AlbumPickerScreenState extends ConsumerState<AlbumPickerScreen> {
   List<MediaAlbumDescriptor> _albums = const <MediaAlbumDescriptor>[];
   List<RecentSessionEntry> _recentSessions = const <RecentSessionEntry>[];
   Set<String> _savedAlbumKeys = const <String>{};
+  bool _cleanedOrphansOnBoot = false;
 
   @override
   void initState() {
@@ -45,6 +46,14 @@ class _AlbumPickerScreenState extends ConsumerState<AlbumPickerScreen> {
 
     try {
       final gateway = ref.read(storageGatewayProvider);
+      if (!_cleanedOrphansOnBoot) {
+        _cleanedOrphansOnBoot = true;
+        unawaited(
+          gateway.cleanOrphanExportTempFiles(olderThanSeconds: 3600).catchError(
+            (_) => 0,
+          ),
+        );
+      }
       final store = ref.read(sessionStoreProvider);
 
       final permission = await gateway.getPermissionState();

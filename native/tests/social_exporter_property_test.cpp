@@ -312,7 +312,7 @@ void test_chained_pipeline_smoke() {
   std::vector<uint8_t> buf = make_synthetic_rgba(kSrcW, kSrcH, 0xC4A19E00ULL);
 
   // 1. DNA Rescue in-place
-  FsDnaRescueParams dna{0.40f, 0.55f, 0.90f, FS_DNA_MODE_SOOC_SAFE, 1};
+  FsDnaRescueParams dna{0.40f, 0.55f, 0.90f, FS_DNA_MODE_SOOC_SAFE, 1, 0.75f};
   FS_CHECK(fs_dna_rescue_apply_rgba_into(
                buf.data(), buf.size(), kSrcW, kSrcH, &dna,
                buf.data(), buf.size()) == FS_OK);
@@ -427,6 +427,39 @@ void test_adversarial_guard_suite() {
   std::printf("[PASS] Suite 7: Adversarial Guard Suite\n");
 }
 
+void test_usm_inplace_bit_exact_edge_dimensions() {
+  struct DimCase {
+    int32_t w, h;
+  };
+  const std::array<DimCase, 4> dims = {{
+      {1, 1},
+      {3, 5},
+      {7, 4},
+      {48, 48},
+  }};
+  const std::array<float, 3> radii = {{0.5f, 0.85f, 2.0f}};
+
+  for (const auto& d : dims) {
+    const std::vector<uint8_t> src =
+        make_synthetic_rgba(d.w, d.h, 0xB1D00001ULL ^ static_cast<uint64_t>(d.w * 31 + d.h));
+    for (float radius : radii) {
+      const FsOutputUsmParams params{0.85f, radius, 1.5f, 18.0f, 1};
+      std::vector<uint8_t> out_of_place(src.size(), 0u);
+      std::vector<uint8_t> in_place = src;
+
+      FS_CHECK(fs_export_output_usm_rgba_into(
+                   src.data(), src.size(), d.w, d.h, &params,
+                   out_of_place.data(), out_of_place.size()) == FS_OK);
+      FS_CHECK(fs_export_output_usm_rgba_into(
+                   in_place.data(), in_place.size(), d.w, d.h, &params,
+                   in_place.data(), in_place.size()) == FS_OK);
+      FS_CHECK(std::memcmp(out_of_place.data(), in_place.data(), src.size()) == 0);
+    }
+  }
+
+  std::printf("[PASS] Suite 8: USM In-Place Bit-Exact Edge Dimensions\n");
+}
+
 }  // namespace
 
 int main() {
@@ -437,6 +470,7 @@ int main() {
   test_downscale_geometry_precision();
   test_chained_pipeline_smoke();
   test_adversarial_guard_suite();
-  std::printf("ALL 7 SOCIAL EXPORTER PROPERTY SUITES PASSED.\n");
+  test_usm_inplace_bit_exact_edge_dimensions();
+  std::printf("ALL 8 SOCIAL EXPORTER PROPERTY SUITES PASSED.\n");
   return 0;
 }

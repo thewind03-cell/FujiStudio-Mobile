@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fujistudio_mobile/core/di/app_providers.dart';
 import 'package:fujistudio_mobile/core/ffi/native_worker.dart';
+import 'package:fujistudio_mobile/core/schema/collage_spec.dart';
 import 'package:fujistudio_mobile/core/schema/edit_recipe.dart';
 import 'package:fujistudio_mobile/core/session/session_store.dart';
 import 'package:fujistudio_mobile/core/storage/asset_pairing_engine.dart';
@@ -86,6 +87,16 @@ final class _CollageTestStorageGateway implements StorageGateway {
 
   @override
   Future<String> getExportTempDirectory() async => '$proxyDir/export_tmp';
+
+  @override
+  Future<int> getAvailableExportSpaceBytes() async => 4 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> getDeviceTotalRamBytes() async => 8 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600}) async =>
+      0;
 
   @override
   Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
@@ -343,6 +354,83 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         PaintingBinding.instance.imageCache.clear();
         expect(tester.takeException(), isNull);
+      },
+    );
+
+    test(
+      'swapping slots preserves 100% of unknownFields, panX, panY, and zoom while updating slotIndex',
+      () {
+        final ids = sessionController.state.galleryOrderedItemIds;
+        final initialSpec = CollageSpec(
+          collageId: 'col_swap_preserve',
+          templateId: 'split_2_v',
+          aspectRatio: '9:16',
+          backgroundHex: '#F4F1EA',
+          spacingPx: 14,
+          slots: <CollageSlot>[
+            CollageSlot(
+              slotIndex: 0,
+              itemId: ids[0],
+              panX: 0.25,
+              panY: -0.15,
+              zoom: 1.6,
+              unknownFields: const <String, Object?>{
+                'desktop_border_style': 'film_sprocket',
+              },
+            ),
+            CollageSlot(
+              slotIndex: 1,
+              itemId: ids[1],
+              panX: -0.35,
+              panY: 0.4,
+              zoom: 1.25,
+              unknownFields: const <String, Object?>{
+                'desktop_border_style': 'clean_matte',
+              },
+            ),
+          ],
+        );
+
+        final controller = StoryCollageController(
+          initialItemIds: ids.take(2).toList(),
+          sessionController: sessionController,
+          proxyCacheManager: proxyManager,
+          nativeGateway: NativeWorkerCollageGateway(worker),
+          slotLoader: _fakeSlotLoader,
+          initialSpec: initialSpec,
+        );
+        addTearDown(controller.dispose);
+
+        controller.selectSlot(0);
+        controller.toggleSwapMode();
+        controller.selectSlot(1);
+
+        final swapped0 = controller.state.spec.slots[0];
+        final swapped1 = controller.state.spec.slots[1];
+
+        expect(swapped0.slotIndex, equals(0));
+        expect(swapped0.itemId, equals(ids[1]));
+        expect(swapped0.panX, equals(-0.35));
+        expect(swapped0.panY, equals(0.4));
+        expect(swapped0.zoom, equals(1.25));
+        expect(
+          swapped0.unknownFields['desktop_border_style'],
+          equals('clean_matte'),
+        );
+
+        expect(swapped1.slotIndex, equals(1));
+        expect(swapped1.itemId, equals(ids[0]));
+        expect(swapped1.panX, equals(0.25));
+        expect(swapped1.panY, equals(-0.15));
+        expect(swapped1.zoom, equals(1.6));
+        expect(
+          swapped1.unknownFields['desktop_border_style'],
+          equals('film_sprocket'),
+        );
+        expect(
+          swapped1.toJson()['desktop_border_style'],
+          equals('film_sprocket'),
+        );
       },
     );
   });

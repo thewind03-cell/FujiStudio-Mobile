@@ -72,15 +72,28 @@ android {
                 abiFilters += listOf("arm64-v8a")
             }
         }
+        create("prod") {
+            dimension = "environment"
+            resValue("string", "app_name", "FujiStudio")
+            // Production release strictly targets arm64-v8a to avoid x86/32-bit bloat.
+            ndk {
+                abiFilters += listOf("arm64-v8a")
+            }
+        }
     }
+
+    val releaseStoreFileProp = keystoreProperties.getProperty("storeFile")
+    val hasReleaseSigning = keystorePropertiesFile.exists() &&
+        !releaseStoreFileProp.isNullOrBlank() &&
+        rootProject.file(releaseStoreFileProp).exists() &&
+        !keystoreProperties.getProperty("storePassword").isNullOrBlank() &&
+        !keystoreProperties.getProperty("keyAlias").isNullOrBlank() &&
+        !keystoreProperties.getProperty("keyPassword").isNullOrBlank()
 
     signingConfigs {
         create("release") {
-            if (keystorePropertiesFile.exists()) {
-                val storeFileProp = keystoreProperties.getProperty("storeFile")
-                if (!storeFileProp.isNullOrBlank()) {
-                    storeFile = rootProject.file(storeFileProp)
-                }
+            if (hasReleaseSigning) {
+                storeFile = rootProject.file(releaseStoreFileProp!!)
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
@@ -100,7 +113,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -113,21 +130,16 @@ android {
 }
 
 androidComponents {
-    // Hard-enforce arm64-v8a-only jniLibs on staging even if Flutter CLI is invoked
+    // Hard-enforce arm64-v8a-only jniLibs on staging & prod even if Flutter CLI is invoked
     // without `--target-platform android-arm64`.
     onVariants(selector().withFlavor("environment" to "staging")) { variant ->
         variant.packaging.jniLibs.excludes.addAll(
             listOf("**/armeabi-v7a/**", "**/x86_64/**", "**/x86/**"),
         )
     }
-}
-
-gradle.taskGraph.whenReady {
-    val isReleaseBuild = allTasks.any { it.name.contains("Release", ignoreCase = true) }
-    if (isReleaseBuild && !keystorePropertiesFile.exists()) {
-        throw GradleException(
-            "Missing android/key.properties for release signing. " +
-                "Copy android/key.properties.example or run scripts/gen_staging_keystore.ps1.",
+    onVariants(selector().withFlavor("environment" to "prod")) { variant ->
+        variant.packaging.jniLibs.excludes.addAll(
+            listOf("**/armeabi-v7a/**", "**/x86_64/**", "**/x86/**"),
         )
     }
 }

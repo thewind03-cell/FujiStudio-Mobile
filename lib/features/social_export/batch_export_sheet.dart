@@ -272,6 +272,18 @@ class _BatchExportSheetState extends ConsumerState<BatchExportSheet> {
                           fontFeatures: FujiTheme.tabularFeatures,
                         ),
                       ),
+                      if (state.errorMessage != null) ...<Widget>[
+                        const SizedBox(height: 6),
+                        Text(
+                          state.errorMessage!,
+                          key: const Key('batch_export_error_text'),
+                          style: const TextStyle(
+                            color: FujiColors.reject,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                       if (state.cancelledCount > 0 ||
                           state.failedCount > 0) ...<Widget>[
                         const SizedBox(height: 6),

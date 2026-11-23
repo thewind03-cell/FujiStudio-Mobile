@@ -34,13 +34,15 @@ FsDnaRescueParams make_params(
     float midtone_anchor = 0.55f,
     float highlight_protect = 0.90f,
     int32_t mode = FS_DNA_MODE_SOOC_SAFE,
-    int32_t enabled = 1) {
+    int32_t enabled = 1,
+    float skin_protect = 0.0f) {
   FsDnaRescueParams p{};
   p.shadow_lift = shadow_lift;
   p.midtone_anchor = midtone_anchor;
   p.highlight_protect = highlight_protect;
   p.mode = mode;
   p.enabled = enabled;
+  p.skin_protect = skin_protect;
   return p;
 }
 
@@ -166,20 +168,7 @@ void test_strict_monotonicity(std::mt19937_64& rng) {
           ray_out[(step + 1) * 4u + 0u],
           ray_out[(step + 1) * 4u + 1u],
           ray_out[(step + 1) * 4u + 2u]);
-      if (y1 + 1e-6f < y0) {
-        const float dip = y0 - y1;
-        if (dip > 0.004f) {
-          std::cerr << "BIG RAY DIP ray=" << ray << " step=" << step
-                    << " s=" << params.shadow_lift << " a=" << params.midtone_anchor
-                    << " h=" << params.highlight_protect << " mode=" << params.mode
-                    << " in0=(" << int(ray_in[step*4]) << "," << int(ray_in[step*4+1]) << "," << int(ray_in[step*4+2]) << ")"
-                    << " in1=(" << int(ray_in[(step+1)*4]) << "," << int(ray_in[(step+1)*4+1]) << "," << int(ray_in[(step+1)*4+2]) << ")"
-                    << " out0=(" << int(ray_out[step*4]) << "," << int(ray_out[step*4+1]) << "," << int(ray_out[step*4+2]) << ")"
-                    << " out1=(" << int(ray_out[(step+1)*4]) << "," << int(ray_out[(step+1)*4+1]) << "," << int(ray_out[(step+1)*4+2]) << ")"
-                    << " dip=" << dip << "\n";
-        }
-      }
-      expect(y1 + (2.0f / 255.0f) >= y0, "color ray Y_out must be non-decreasing within u8 quantization");
+      expect(y1 + (1.0f / 255.0f) >= y0, "color ray Y_out must be non-decreasing within u8 quantization");
     }
   }
 }
@@ -387,6 +376,13 @@ void test_error_and_fuzz_bounds() {
              FS_ERR_INVALID_PARAMS,
          "Inf midtone_anchor must return FS_ERR_INVALID_PARAMS");
 
+  FsDnaRescueParams nan_skin = valid;
+  nan_skin.skin_protect = std::numeric_limits<float>::quiet_NaN();
+  expect(fs_dna_rescue_apply_rgba_into(
+             buf, sizeof(buf), 2, 2, &nan_skin, out, sizeof(out)) ==
+             FS_ERR_INVALID_PARAMS,
+         "NaN skin_protect must return FS_ERR_INVALID_PARAMS");
+
   FsDnaRescueParams bad_mode = valid;
   bad_mode.mode = 99;
   expect(fs_dna_rescue_apply_rgba_into(
@@ -568,6 +564,206 @@ void test_portrait_skin_midtone_isolation() {
   }
 }
 
+// 11. Smooth Skin & Sky Gradients (Anti-Banding + YCbCr skin_protect + Scalar/NEON Parity)
+void test_skin_protect_gradients_and_scalar_neon_parity() {
+  constexpr int32_t kSteps = 256;
+  constexpr size_t kBytes = static_cast<size_t>(kSteps) * 4u;
+
+  auto scalar_reference = [](const uint8_t* in, uint8_t* out, size_t pixels,
+                             const FsDnaRescueParams& params) {
+    const float s = std::clamp(params.shadow_lift, 0.0f, 1.0f);
+    const float a = std::clamp(params.midtone_anchor, 0.35f, 0.75f);
+    const float h = std::clamp(params.highlight_protect, 0.75f, 0.98f);
+    const float sp = std::clamp(params.skin_protect, 0.0f, 1.0f);
+    const float c_max =
+        (params.mode == FS_DNA_MODE_DEEP_RESCUE) ? 1.05f : 0.85f;
+    const float h_lo = h - 0.15f;
+    constexpr float kHSpan = 0.15f;
+    for (size_t idx = 0; idx < pixels; ++idx) {
+      const size_t i = idx * 4u;
+      const float r = static_cast<float>(in[i + 0u]) / 255.0f;
+      const float g = static_cast<float>(in[i + 1u]) / 255.0f;
+      const float b = static_cast<float>(in[i + 2u]) / 255.0f;
+      const float y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+      const float v = std::max(r, std::max(g, b));
+      const float y_eff = 0.65f * y + 0.35f * v;
+      if (y_eff >= a || y_eff <= 0.0f) {
+        out[i + 0u] = in[i + 0u];
+        out[i + 1u] = in[i + 1u];
+        out[i + 2u] = in[i + 2u];
+        out[i + 3u] = in[i + 3u];
+        continue;
+      }
+      const float t = y_eff / a;
+      const float t2 = t * t;
+      const float toe = t2 / (t2 + 0.06f);
+      const float omt = 1.0f - t;
+      const float delta = a * c_max * s * toe * omt * omt * omt * omt;
+      float guard = 1.0f;
+      if (y_eff >= h) {
+        guard = 0.0f;
+      } else if (y_eff > h_lo) {
+        const float u = (h - y_eff) / kHSpan;
+        guard = u * u * (3.0f - 2.0f * u);
+      }
+      const float gain = std::min((y_eff + delta * guard) / std::max(y_eff, 1e-6f),
+                                  1.0f / std::max(v, 1e-6f));
+      const float y_out = std::clamp(y * gain, 0.0f, 1.0f);
+      const float damp_factor =
+          std::clamp(1.0f - 1.0f / std::max(gain, 1.0f), 0.0f, 1.0f);
+      const float cb = -0.168736f * r - 0.331264f * g + 0.5f * b + 0.5f;
+      const float cr = 0.5f * r - 0.418688f * g - 0.081312f * b + 0.5f;
+      const float d_cb = (cb - 0.43f) / 0.11f;
+      const float d_cr = (cr - 0.58f) / 0.09f;
+      const float skin_t = std::clamp(1.0f - (d_cb * d_cb + d_cr * d_cr), 0.0f, 1.0f);
+      const float skin_w = skin_t * skin_t * (3.0f - 2.0f * skin_t);
+      const float chroma_damp = 1.0f - (0.03f + 0.22f * sp * skin_w) * damp_factor;
+      auto to_u8 = [](float x) -> uint8_t {
+        return static_cast<uint8_t>(std::clamp(x, 0.0f, 1.0f) * 255.0f + 0.5f);
+      };
+      out[i + 0u] = to_u8(y_out + (r * gain - y_out) * chroma_damp);
+      out[i + 1u] = to_u8(y_out + (g * gain - y_out) * chroma_damp);
+      out[i + 2u] = to_u8(y_out + (b * gain - y_out) * chroma_damp);
+      out[i + 3u] = in[i + 3u];
+    }
+  };
+
+  // 1) Smooth portrait skin gradient (deep shadowed skin -> midtone skin)
+  std::vector<uint8_t> skin_grad(kBytes);
+  for (int32_t step = 0; step < kSteps; ++step) {
+    const float u = static_cast<float>(step) / static_cast<float>(kSteps - 1);
+    const size_t i = static_cast<size_t>(step) * 4u;
+    skin_grad[i + 0u] = static_cast<uint8_t>(std::lround(30.0f + u * 180.0f));
+    skin_grad[i + 1u] = static_cast<uint8_t>(std::lround(20.0f + u * 138.0f));
+    skin_grad[i + 2u] = static_cast<uint8_t>(std::lround(16.0f + u * 116.0f));
+    skin_grad[i + 3u] = 255u;
+  }
+
+  std::vector<uint8_t> skin_off(kBytes);
+  std::vector<uint8_t> skin_on(kBytes);
+  std::vector<uint8_t> skin_ref(kBytes);
+  const FsDnaRescueParams p_skin_off =
+      make_params(0.75f, 0.55f, 0.90f, FS_DNA_MODE_DEEP_RESCUE, 1, 0.0f);
+  const FsDnaRescueParams p_skin_on =
+      make_params(0.75f, 0.55f, 0.90f, FS_DNA_MODE_DEEP_RESCUE, 1, 1.0f);
+
+  expect(fs_dna_rescue_apply_rgba_into(
+             skin_grad.data(), kBytes, kSteps, 1, &p_skin_off, skin_off.data(), kBytes) == FS_OK,
+         "Suite 11 skin_protect=0 must return FS_OK");
+  expect(fs_dna_rescue_apply_rgba_into(
+             skin_grad.data(), kBytes, kSteps, 1, &p_skin_on, skin_on.data(), kBytes) == FS_OK,
+         "Suite 11 skin_protect=1 must return FS_OK");
+  scalar_reference(skin_grad.data(), skin_ref.data(), static_cast<size_t>(kSteps), p_skin_on);
+
+  int skin_damped_count = 0;
+  for (int32_t step = 0; step < kSteps; ++step) {
+    const size_t i = static_cast<size_t>(step) * 4u;
+    for (size_t c = 0; c < 3u; ++c) {
+      expect(std::abs(static_cast<int>(skin_on[i + c]) -
+                      static_cast<int>(skin_ref[i + c])) <= 1,
+             "Suite 11: Scalar/NEON parity diff must be <= 1 on skin gradient");
+    }
+    if (step > 0) {
+      const float y_prev = rec709_luma_u8(skin_on[i - 4u], skin_on[i - 3u], skin_on[i - 2u]);
+      const float y_curr = rec709_luma_u8(skin_on[i + 0u], skin_on[i + 1u], skin_on[i + 2u]);
+      expect(y_curr + (1.5f / 255.0f) >= y_prev,
+             "Suite 11: skin gradient luma must remain non-decreasing within u8 quantization");
+      for (size_t c = 0; c < 3u; ++c) {
+        const int jump = std::abs(static_cast<int>(skin_on[i + c]) -
+                                  static_cast<int>(skin_on[i - 4u + c]));
+        expect(jump <= 3,
+               "Suite 11: skin gradient adjacent channel step must be <= 3 (no banding)");
+      }
+    }
+    // Check that skin_protect=1 dampens R-B chroma spread on lifted shadow skin.
+    const int spread_off = static_cast<int>(skin_off[i + 0u]) - static_cast<int>(skin_off[i + 2u]);
+    const int spread_on = static_cast<int>(skin_on[i + 0u]) - static_cast<int>(skin_on[i + 2u]);
+    if (spread_on < spread_off) {
+      ++skin_damped_count;
+    }
+  }
+  expect(skin_damped_count > 20,
+         "Suite 11: skin_protect=1 must noticeably damp chroma overshoot in shadowed skin");
+
+  // 2) Smooth blue sky gradient (must stay smooth & unaffected by skin_protect)
+  std::vector<uint8_t> sky_grad(kBytes);
+  for (int32_t step = 0; step < kSteps; ++step) {
+    const float u = static_cast<float>(step) / static_cast<float>(kSteps - 1);
+    const size_t i = static_cast<size_t>(step) * 4u;
+    sky_grad[i + 0u] = static_cast<uint8_t>(std::lround(18.0f + u * 92.0f));
+    sky_grad[i + 1u] = static_cast<uint8_t>(std::lround(34.0f + u * 131.0f));
+    sky_grad[i + 2u] = static_cast<uint8_t>(std::lround(62.0f + u * 173.0f));
+    sky_grad[i + 3u] = 255u;
+  }
+
+  std::vector<uint8_t> sky_off(kBytes);
+  std::vector<uint8_t> sky_on(kBytes);
+  std::vector<uint8_t> sky_ref(kBytes);
+  expect(fs_dna_rescue_apply_rgba_into(
+             sky_grad.data(), kBytes, kSteps, 1, &p_skin_off, sky_off.data(), kBytes) == FS_OK,
+         "Suite 11 sky skin_protect=0 must return FS_OK");
+  expect(fs_dna_rescue_apply_rgba_into(
+             sky_grad.data(), kBytes, kSteps, 1, &p_skin_on, sky_on.data(), kBytes) == FS_OK,
+         "Suite 11 sky skin_protect=1 must return FS_OK");
+  scalar_reference(sky_grad.data(), sky_ref.data(), static_cast<size_t>(kSteps), p_skin_on);
+
+  for (int32_t step = 0; step < kSteps; ++step) {
+    const size_t i = static_cast<size_t>(step) * 4u;
+    for (size_t c = 0; c < 3u; ++c) {
+      expect(std::abs(static_cast<int>(sky_on[i + c]) -
+                      static_cast<int>(sky_off[i + c])) <= 1,
+             "Suite 11: blue sky gradient must remain unaffected by skin_protect");
+      expect(std::abs(static_cast<int>(sky_on[i + c]) -
+                      static_cast<int>(sky_ref[i + c])) <= 1,
+             "Suite 11: Scalar/NEON parity diff must be <= 1 on sky gradient");
+    }
+    if (step > 0) {
+      for (size_t c = 0; c < 3u; ++c) {
+        const int jump = std::abs(static_cast<int>(sky_on[i + c]) -
+                                  static_cast<int>(sky_on[i - 4u + c]));
+        expect(jump <= 3,
+               "Suite 11: sky gradient adjacent channel step must be <= 3 (no banding)");
+      }
+    }
+  }
+}
+
+// 12. Saturated Primary Ray Regression (0,0,B) & (R,0,0) across 0..255
+void test_saturated_ray_regression() {
+  constexpr size_t kSteps = 256;
+  constexpr size_t kBytes = kSteps * 4u;
+  const FsDnaRescueParams params =
+      make_params(1.0f, 0.70f, 0.75f, FS_DNA_MODE_DEEP_RESCUE, 1, 0.0f);
+
+  std::vector<uint8_t> blue_in(kBytes, 0u);
+  std::vector<uint8_t> blue_out(kBytes, 0u);
+  std::vector<uint8_t> red_in(kBytes, 0u);
+  std::vector<uint8_t> red_out(kBytes, 0u);
+
+  for (size_t v = 0; v < kSteps; ++v) {
+    blue_in[v * 4u + 2u] = static_cast<uint8_t>(v);
+    blue_in[v * 4u + 3u] = 255u;
+    red_in[v * 4u + 0u] = static_cast<uint8_t>(v);
+    red_in[v * 4u + 3u] = 255u;
+  }
+
+  expect(fs_dna_rescue_apply_rgba_into(
+             blue_in.data(), kBytes, static_cast<int32_t>(kSteps), 1, &params,
+             blue_out.data(), kBytes) == FS_OK,
+         "Suite 12 blue ray apply must succeed");
+  expect(fs_dna_rescue_apply_rgba_into(
+             red_in.data(), kBytes, static_cast<int32_t>(kSteps), 1, &params,
+             red_out.data(), kBytes) == FS_OK,
+         "Suite 12 red ray apply must succeed");
+
+  for (size_t v = 1; v < kSteps; ++v) {
+    expect(blue_out[v * 4u + 2u] >= blue_out[(v - 1u) * 4u + 2u],
+           "Suite 12: (0,0,B) out_B[B] must be >= out_B[B-1] for all B=1..255");
+    expect(red_out[v * 4u + 0u] >= red_out[(v - 1u) * 4u + 0u],
+           "Suite 12: (R,0,0) out_R[R] must be >= out_R[R-1] for all R=1..255");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -583,12 +779,14 @@ int main() {
   test_auto_analyze_and_perf(rng);
   test_zero_haze_black_floor_guard();
   test_portrait_skin_midtone_isolation();
+  test_skin_protect_gradients_and_scalar_neon_parity();
+  test_saturated_ray_regression();
 
   if (g_failures > 0) {
     std::cerr << "dna_rescue_property_test FAILED with " << g_failures
               << " failure(s).\n";
     return 1;
   }
-  std::cout << "dna_rescue_property_test PASSED (all 10 property suites green).\n";
+  std::cout << "dna_rescue_property_test PASSED (all 12 property suites green).\n";
   return 0;
 }

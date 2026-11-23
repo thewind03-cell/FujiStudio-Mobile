@@ -159,6 +159,29 @@ final class AndroidStorageGateway implements StorageGateway {
   }
 
   @override
+  Future<int> getAvailableExportSpaceBytes() async {
+    final bytes = await _channel.invokeMethod<num>(
+      'getAvailableExportSpaceBytes',
+    );
+    return bytes?.toInt() ?? 0;
+  }
+
+  @override
+  Future<int> getDeviceTotalRamBytes() async {
+    final bytes = await _channel.invokeMethod<num>('getDeviceTotalRamBytes');
+    return bytes?.toInt() ?? (8 * 1024 * 1024 * 1024);
+  }
+
+  @override
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600}) async {
+    final cleaned = await _channel.invokeMethod<num>(
+      'cleanOrphanExportTempFiles',
+      <String, Object?>{'olderThanSeconds': olderThanSeconds},
+    );
+    return cleaned?.toInt() ?? 0;
+  }
+
+  @override
   Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
     required String source,
     required bool isContentUri,

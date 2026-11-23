@@ -396,6 +396,36 @@ void test_adversarial_cases() {
     expect(has_exif == 1u, "MM orientation=6 must set has_exif_tag=1");
     expect(w == 4000u && h == 3000u, "MM SOF0 dimensions must decode accurately");
   }
+
+  // Trailing 0x00 pad tolerance: 512 and 4096 bytes pass; 4097 bytes fail with FS_ERR_JPEG_INVALID_EOI
+  {
+    const auto jpeg = build_synthetic_jpeg(false, 1, 100, 100);
+    for (size_t valid_pad : {size_t(512), size_t(4096)}) {
+      const auto raf = build_synthetic_raf("X-T5", jpeg, valid_pad);
+      uint8_t* pad_out = nullptr;
+      size_t pad_len = 0;
+      const int32_t rc = fs_raf_extract_jpeg_buffer(
+          raf.data(), raf.size(), &pad_out, &pad_len, &meta);
+      expect(rc == FS_OK, "RAF with 512/4096 trailing 0x00 pad must return FS_OK");
+      expect(pad_out != nullptr && pad_len == jpeg.size(),
+             "RAF with 512/4096 trailing 0x00 pad must trim to exact JPEG length");
+      if (pad_out != nullptr && pad_len == jpeg.size()) {
+        expect(std::memcmp(pad_out, jpeg.data(), pad_len) == 0,
+               "RAF trimmed JPEG bytes must match bit-for-bit");
+      }
+      fs_free_buffer(pad_out);
+    }
+
+    const auto raf_over = build_synthetic_raf("X-T5", jpeg, 4097u);
+    out = reinterpret_cast<uint8_t*>(0x1);
+    out_len = 99;
+    const int32_t rc_over = fs_raf_extract_jpeg_buffer(
+        raf_over.data(), raf_over.size(), &out, &out_len, &meta);
+    expect(rc_over == FS_ERR_JPEG_INVALID_EOI,
+           "RAF with 4097 trailing 0x00 pad must return FS_ERR_JPEG_INVALID_EOI");
+    expect(out == nullptr && out_len == 0u,
+           "4097 pad rejection must reset outputs");
+  }
 }
 
 // 3. Deterministic Seeded Mutation Fuzzing (10,000 samples)

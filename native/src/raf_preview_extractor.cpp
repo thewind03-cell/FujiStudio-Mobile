@@ -35,7 +35,7 @@ constexpr size_t kRafModelOffset = 0x1Cu;
 constexpr size_t kRafModelBytes = 32u;
 constexpr size_t kRafJpegOffsetPos = 0x54u;
 constexpr size_t kRafJpegLengthPos = 0x58u;
-constexpr size_t kMaxTrailingZeroPad = 64u;
+constexpr size_t kMaxTrailingZeroPad = 4096u;
 constexpr size_t kMaxJpegMarkers = 64u;
 constexpr uint16_t kMaxIfdEntries = 512u;
 
@@ -154,10 +154,13 @@ int32_t validate_and_trim_jpeg_slice(
     return FS_ERR_JPEG_INVALID_SOI;
   }
 
+  const size_t max_pad = std::min(
+      kMaxTrailingZeroPad,
+      raw_len > 2u ? raw_len - 2u : size_t{0});
   size_t trimmed_end = raw_len;
   size_t zero_count = 0;
   while (trimmed_end > 2u &&
-         zero_count < kMaxTrailingZeroPad &&
+         zero_count < max_pad &&
          jpeg_bytes[trimmed_end - 1u] == 0x00u) {
     --trimmed_end;
     ++zero_count;

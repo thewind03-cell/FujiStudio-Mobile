@@ -81,6 +81,7 @@ final class _WidgetStudioGateway implements StudioNativeGateway {
   Future<GeometryProposalNative> analyzeGeometryOnSurface({
     required int surfaceId,
     required int targetAspectPreset,
+    bool useRescuedBuffer = false,
   }) async {
     return GeometryProposalNative(
       statusCode: FsStatusCode.FS_OK.value,
@@ -185,6 +186,16 @@ final class _WidgetStorageGateway implements StorageGateway {
 
   @override
   Future<String> getExportTempDirectory() async => '$proxyDir/export_tmp';
+
+  @override
+  Future<int> getAvailableExportSpaceBytes() async => 4 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> getDeviceTotalRamBytes() async => 8 * 1024 * 1024 * 1024;
+
+  @override
+  Future<int> cleanOrphanExportTempFiles({int olderThanSeconds = 3600}) async =>
+      0;
 
   @override
   Future<DecodedExportRawResult> decodeSourceForExportToRawFile({

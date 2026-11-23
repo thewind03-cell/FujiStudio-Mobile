@@ -198,5 +198,159 @@ void main() {
         expect(outBytes[slot0InteriorOff], greaterThan(22));
       },
     );
+
+    test(
+      'renderCollageToRawFile applies per-slot GeometryNativeParams (rotationDeg=8.0) via Host C++ DLL',
+      () async {
+        const slotW = 320;
+        const slotH = 240;
+        final patterned = Uint8List(slotW * slotH * 4);
+        for (var y = 0; y < slotH; y++) {
+          for (var x = 0; x < slotW; x++) {
+            final off = (y * slotW + x) * 4;
+            final leftHalf = x < slotW ~/ 2;
+            patterned[off + 0] = leftHalf ? 20 : 230;
+            patterned[off + 1] = y < slotH ~/ 2 ? 40 : 210;
+            patterned[off + 2] = leftHalf ? 200 : 30;
+            patterned[off + 3] = 255;
+          }
+        }
+
+        final slot0Path = '${tempDir.path}${Platform.pathSeparator}geo_slot0.rgba';
+        final slot1Path = '${tempDir.path}${Platform.pathSeparator}geo_slot1.rgba';
+        final outNoRotPath = '${tempDir.path}${Platform.pathSeparator}col_no_rot.rgba';
+        final outRotPath = '${tempDir.path}${Platform.pathSeparator}col_rot8.rgba';
+        File(slot0Path).writeAsBytesSync(patterned);
+        File(slot1Path).writeAsBytesSync(patterned);
+
+        final cfg = CollageNativeConfig(
+          templateId: FsCollageTemplate.FS_COLLAGE_SPLIT_2_V.value,
+          canvasWidth: 540,
+          canvasHeight: 960,
+          gutterPx: 12,
+          outerMarginPx: 16,
+          bgR: 20,
+          bgG: 20,
+          bgB: 20,
+        );
+
+        final resNoRot = await worker.renderCollageToRawFile(
+          slots: <CollageRawFileSlot>[
+            CollageRawFileSlot(rawInputPath: slot0Path, width: slotW, height: slotH),
+            CollageRawFileSlot(rawInputPath: slot1Path, width: slotW, height: slotH),
+          ],
+          config: cfg,
+          outputUsm: null,
+          rawOutputPath: outNoRotPath,
+        );
+        final resRot = await worker.renderCollageToRawFile(
+          slots: <CollageRawFileSlot>[
+            CollageRawFileSlot(
+              rawInputPath: slot0Path,
+              width: slotW,
+              height: slotH,
+              geometry: GeometryNativeParams(
+                rotationDeg: 8.0,
+                aspectPreset: FsAspectPreset.FS_ASPECT_ORIGINAL.value,
+                cropBox: NormCropBoxData.full,
+                highQuality: true,
+              ),
+            ),
+            CollageRawFileSlot(rawInputPath: slot1Path, width: slotW, height: slotH),
+          ],
+          config: cfg,
+          outputUsm: null,
+          rawOutputPath: outRotPath,
+        );
+
+        expect(resNoRot.isOk, isTrue);
+        expect(resRot.isOk, isTrue);
+
+        final bytesNoRot = File(outNoRotPath).readAsBytesSync();
+        final bytesRot = File(outRotPath).readAsBytesSync();
+        var diffPixels = 0;
+        for (var i = 0; i < bytesNoRot.length; i += 4) {
+          if (bytesNoRot[i] != bytesRot[i] ||
+              bytesNoRot[i + 1] != bytesRot[i + 1] ||
+              bytesNoRot[i + 2] != bytesRot[i + 2]) {
+            diffPixels++;
+          }
+        }
+        expect(diffPixels, greaterThan(1000));
+      },
+    );
+
+    test(
+      'analyzeGeometryOnSurface(useRescuedBuffer: true) safely falls back to srcPtr before DNA render and uses dstPtr after DNA render',
+      () async {
+        const w = 160;
+        const h = 120;
+        // Dark tilted horizon edge in srcPtr (0..18) so before DNA rescue it's low contrast,
+        // while uninitialized dstPtr is zeroed; after DNA rescue dstPtr has lifted contrast.
+        final srcRgba = Uint8List(w * h * 4);
+        for (var y = 0; y < h; y++) {
+          final horizonY = (h * 0.5 + (y == 0 ? 0 : 0)) + 0.0;
+          for (var x = 0; x < w; x++) {
+            final off = (y * w + x) * 4;
+            final slopeY = horizonY + (x - w / 2) * 0.08;
+            final val = y < slopeY ? 18 : 4;
+            srcRgba[off + 0] = val;
+            srcRgba[off + 1] = val;
+            srcRgba[off + 2] = val;
+            srcRgba[off + 3] = 255;
+          }
+        }
+
+        final surfaceId = await worker.openStudioSurface(
+          width: w,
+          height: h,
+          sourceRgba: srcRgba,
+        );
+        try {
+          // 1) Before renderStudioSurface: dstPtr is not valid yet -> must fall back to srcPtr
+          final propSrc = await worker.analyzeGeometryOnSurface(
+            surfaceId: surfaceId,
+            targetAspectPreset: FsAspectPreset.FS_ASPECT_ORIGINAL.value,
+          );
+          final propFallback = await worker.analyzeGeometryOnSurface(
+            surfaceId: surfaceId,
+            targetAspectPreset: FsAspectPreset.FS_ASPECT_ORIGINAL.value,
+            useRescuedBuffer: true,
+          );
+          expect(propFallback.isOk, isTrue);
+          expect(
+            propFallback.suggestedRotationDeg,
+            closeTo(propSrc.suggestedRotationDeg, 1e-6),
+          );
+          expect(
+            propFallback.horizonConfidence,
+            closeTo(propSrc.horizonConfidence, 1e-6),
+          );
+
+          // 2) Render DNA Rescue into dstPtr, then re-analyze with useRescuedBuffer: true
+          final renderRes = await worker.renderStudioSurface(
+            surfaceId: surfaceId,
+            params: const DnaRescueNativeParams(
+              shadowLift: 0.90,
+              midtoneAnchor: 0.65,
+              mode: 1,
+              enabled: true,
+            ),
+          );
+          expect(renderRes.isOk, isTrue);
+
+          final propRescued = await worker.analyzeGeometryOnSurface(
+            surfaceId: surfaceId,
+            targetAspectPreset: FsAspectPreset.FS_ASPECT_ORIGINAL.value,
+            useRescuedBuffer: true,
+          );
+          expect(propRescued.isOk, isTrue);
+          expect(propRescued.suggestedRotationDeg.isFinite, isTrue);
+          expect(propRescued.cropConfidence.isFinite, isTrue);
+        } finally {
+          await worker.closeStudioSurface(surfaceId);
+        }
+      },
+    );
   });
 }

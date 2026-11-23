@@ -2,11 +2,14 @@ package org.fujistudio.mobile
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.ContentUris
 import android.content.ContentValues
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorSpace
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
@@ -14,14 +17,16 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.provider.MediaStore
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ExecutorService
@@ -182,6 +187,28 @@ class StorageGatewayChannel(
                 ioExecutor.execute {
                     runOnResult(result) {
                         ensureExportTempDir().absolutePath
+                    }
+                }
+            }
+            "getAvailableExportSpaceBytes" -> {
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        getAvailableExportSpaceBytes()
+                    }
+                }
+            }
+            "getDeviceTotalRamBytes" -> {
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        getDeviceTotalRamBytes()
+                    }
+                }
+            }
+            "cleanOrphanExportTempFiles" -> {
+                val olderThanSeconds = call.argument<Int>("olderThanSeconds") ?: 3600
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        cleanOrphanExportTempFiles(olderThanSeconds)
                     }
                 }
             }
@@ -575,6 +602,9 @@ class StorageGatewayChannel(
         val decodeOpts = BitmapFactory.Options().apply {
             this.inSampleSize = inSampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
+            }
         }
         val decoded = decodeBitmapStreamOrFile(source, isContentUri, decodeOpts)
             ?: throw IllegalStateException("BitmapFactory failed to decode $source")
@@ -600,7 +630,6 @@ class StorageGatewayChannel(
                     throw IllegalStateException("Bitmap.compress(JPEG) returned false")
                 }
                 fos.flush()
-                runCatching { fos.fd.sync() }
             }
             if (!tmpFile.renameTo(outFile)) {
                 if (outFile.exists()) {
@@ -708,6 +737,83 @@ class StorageGatewayChannel(
         return dir
     }
 
+    private fun getAvailableExportSpaceBytes(): Long {
+        val stat = StatFs(activity.cacheDir.absolutePath)
+        return stat.availableBytes
+    }
+
+    private fun getDeviceTotalRamBytes(): Long {
+        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (am != null) {
+            val info = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(info)
+            if (info.totalMem > 0L) {
+                return info.totalMem
+            }
+        }
+        return 8L * 1024L * 1024L * 1024L
+    }
+
+    private fun cleanOrphanExportTempFiles(olderThanSeconds: Int): Int {
+        var cleaned = 0
+        val exportTmpDir = ensureExportTempDir()
+        val cutoffMs = System.currentTimeMillis() - olderThanSeconds.toLong() * 1000L
+        exportTmpDir.listFiles()?.forEach { file ->
+            if (file.isFile &&
+                (olderThanSeconds <= 0 || file.lastModified() < cutoffMs) &&
+                runCatching { file.delete() }.getOrDefault(false)) {
+                cleaned += 1
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val safeAgeSec = max(60, olderThanSeconds).toLong()
+            val cutoffEpochSec = (System.currentTimeMillis() / 1000L) - safeAgeSec
+            val resolver = activity.contentResolver
+            val pendingUri = MediaStore.setIncludePending(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            )
+            val projection = arrayOf(MediaStore.MediaColumns._ID)
+            val selection = "${MediaStore.MediaColumns.IS_PENDING} = 1 " +
+                "AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? " +
+                "AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? " +
+                "AND ${MediaStore.MediaColumns.DATE_ADDED} < ?"
+            val selectionArgs = arrayOf(
+                activity.packageName,
+                "${Environment.DIRECTORY_PICTURES}/FujiStudio%",
+                cutoffEpochSec.toString(),
+            )
+
+            runCatching {
+                resolver.query(
+                    pendingUri,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    null,
+                )?.use { cursor ->
+                    val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                    if (idIdx >= 0) {
+                        while (cursor.moveToNext()) {
+                            val id = cursor.getLong(idIdx)
+                            val rowUri = ContentUris.withAppendedId(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                id,
+                            )
+                            val deleted = runCatching {
+                                resolver.delete(rowUri, null, null)
+                            }.getOrDefault(0)
+                            if (deleted > 0) {
+                                cleaned += deleted
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return cleaned
+    }
+
     private fun transformBitmapOrientationOnly(src: Bitmap, orientation: Int): Bitmap {
         val matrix = Matrix()
         when (orientation) {
@@ -756,11 +862,17 @@ class StorageGatewayChannel(
             while ((rawLongEdge / (inSampleSize * 2)) >= maxDecodeLongEdge) {
                 inSampleSize *= 2
             }
+            if (maxDecodeLongEdge <= 4608 && (rawLongEdge / inSampleSize) > 4608) {
+                inSampleSize *= 2
+            }
         }
 
         val decodeOpts = BitmapFactory.Options().apply {
             this.inSampleSize = inSampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
+            }
         }
         val decoded = decodeBitmapStreamOrFile(source, isContentUri, decodeOpts)
             ?: throw IllegalStateException("BitmapFactory failed to decode $source")
@@ -795,17 +907,29 @@ class StorageGatewayChannel(
                 "Decoded raw RGBA buffer size overflow: ${finalW}x$finalH"
             }
 
-            val pixelBuffer = ByteBuffer.allocateDirect(totalBytesLong.toInt())
-            rgbaBitmap.copyPixelsToBuffer(pixelBuffer)
-            pixelBuffer.rewind()
+            val chunkRows = 64
+            val intBuf = IntArray(finalW * chunkRows)
+            val byteBuf = ByteArray(finalW * chunkRows * 4)
 
-            FileOutputStream(tmpFile).use { fos ->
-                val ch = fos.channel
-                while (pixelBuffer.hasRemaining()) {
-                    ch.write(pixelBuffer)
+            BufferedOutputStream(FileOutputStream(tmpFile), 64 * 1024).use { bos ->
+                var y = 0
+                while (y < finalH) {
+                    val rows = min(chunkRows, finalH - y)
+                    val count = finalW * rows
+                    rgbaBitmap.getPixels(intBuf, 0, finalW, 0, y, finalW, rows)
+                    var o = 0
+                    for (i in 0 until count) {
+                        val p = intBuf[i]
+                        byteBuf[o] = ((p ushr 16) and 0xFF).toByte()     // R
+                        byteBuf[o + 1] = ((p ushr 8) and 0xFF).toByte()  // G
+                        byteBuf[o + 2] = (p and 0xFF).toByte()           // B
+                        byteBuf[o + 3] = ((p ushr 24) and 0xFF).toByte() // A
+                        o += 4
+                    }
+                    bos.write(byteBuf, 0, count * 4)
+                    y += rows
                 }
-                fos.flush()
-                runCatching { fos.fd.sync() }
+                bos.flush()
             }
 
             if (!tmpFile.renameTo(outFile)) {
@@ -851,23 +975,10 @@ class StorageGatewayChannel(
         require(expectedBytesLong <= Int.MAX_VALUE.toLong()) {
             "RGBA byte length overflow for ${width}x$height"
         }
-        val expectedBytes = expectedBytesLong.toInt()
         val rawFile = File(rawRgbaPath)
         require(rawFile.exists() && rawFile.length() >= expectedBytesLong) {
             "Missing or truncated raw RGBA file: $rawRgbaPath"
         }
-
-        val pixelBuffer = ByteBuffer.allocateDirect(expectedBytes)
-        FileInputStream(rawFile).use { fis ->
-            val ch = fis.channel
-            while (pixelBuffer.hasRemaining()) {
-                val read = ch.read(pixelBuffer)
-                if (read < 0) {
-                    throw IllegalStateException("Unexpected EOF reading $rawRgbaPath")
-                }
-            }
-        }
-        pixelBuffer.rewind()
 
         val exportTmpDir = ensureExportTempDir()
         val tempJpegFile = File(exportTmpDir, "enc_${UUID.randomUUID()}.jpg")
@@ -875,14 +986,44 @@ class StorageGatewayChannel(
 
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
-            bitmap.copyPixelsFromBuffer(pixelBuffer)
+            val chunkRows = 64
+            val intBuf = IntArray(width * chunkRows)
+            val byteBuf = ByteArray(width * chunkRows * 4)
+
+            BufferedInputStream(FileInputStream(rawFile), 64 * 1024).use { bis ->
+                var y = 0
+                while (y < height) {
+                    val rows = min(chunkRows, height - y)
+                    val count = width * rows
+                    val bytesToRead = count * 4
+                    var totalRead = 0
+                    while (totalRead < bytesToRead) {
+                        val n = bis.read(byteBuf, totalRead, bytesToRead - totalRead)
+                        if (n < 0) {
+                            throw IllegalStateException("Unexpected EOF reading $rawRgbaPath")
+                        }
+                        totalRead += n
+                    }
+                    var o = 0
+                    for (i in 0 until count) {
+                        val r = byteBuf[o].toInt() and 0xFF
+                        val g = byteBuf[o + 1].toInt() and 0xFF
+                        val b = byteBuf[o + 2].toInt() and 0xFF
+                        val a = byteBuf[o + 3].toInt() and 0xFF
+                        intBuf[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                        o += 4
+                    }
+                    bitmap.setPixels(intBuf, 0, width, 0, y, width, rows)
+                    y += rows
+                }
+            }
+
             FileOutputStream(tempJpegFile).use { fos ->
                 val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, quality, fos)
                 if (!ok) {
                     throw IllegalStateException("Bitmap.compress(JPEG) returned false")
                 }
                 fos.flush()
-                runCatching { fos.fd.sync() }
             }
         } finally {
             if (!bitmap.isRecycled) {

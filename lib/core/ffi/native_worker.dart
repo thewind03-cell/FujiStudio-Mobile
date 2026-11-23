@@ -34,6 +34,7 @@ final class DnaRescueNativeParams {
     this.highlightProtect = 0.90,
     this.mode = 0,
     this.enabled = true,
+    this.skinProtect = 0.0,
   });
 
   final double shadowLift;
@@ -41,6 +42,7 @@ final class DnaRescueNativeParams {
   final double highlightProtect;
   final int mode;
   final bool enabled;
+  final double skinProtect;
 }
 
 /// Result returned by [NativeWorker.renderStudioSurface].
@@ -315,6 +317,7 @@ final class CollageRawFileSlot {
     this.panY = 0.0,
     this.zoom = 1.0,
     this.dnaRescue,
+    this.geometry,
   });
 
   final String rawInputPath;
@@ -324,6 +327,7 @@ final class CollageRawFileSlot {
   final double panY;
   final double zoom;
   final DnaRescueNativeParams? dnaRescue;
+  final GeometryNativeParams? geometry;
 }
 
 /// Metadata-only result returned by [NativeWorker.runExportPipelineOnRawFile]
@@ -637,12 +641,14 @@ final class NativeWorker {
   Future<GeometryProposalNative> analyzeGeometryOnSurface({
     required int surfaceId,
     required int targetAspectPreset,
+    bool useRescuedBuffer = false,
   }) async {
     return _sendRequest<GeometryProposalNative>(
       (id) => _AnalyzeGeometrySurfaceRequest(
         id: id,
         surfaceId: surfaceId,
         targetAspectPreset: targetAspectPreset,
+        useRescuedBuffer: useRescuedBuffer,
       ),
     );
   }
@@ -1451,7 +1457,8 @@ _StudioRenderPayload _executeRenderStudioSurface(
     ..midtone_anchor = request.params.midtoneAnchor
     ..highlight_protect = request.params.highlightProtect
     ..mode = request.params.mode
-    ..enabled = request.params.enabled ? 1 : 0;
+    ..enabled = request.params.enabled ? 1 : 0
+    ..skin_protect = request.params.skinProtect;
 
   final sw = Stopwatch()..start();
   final rc = bindings.fs_dna_rescue_apply_rgba_into(
@@ -1475,6 +1482,7 @@ _StudioRenderPayload _executeRenderStudioSurface(
     );
   }
 
+  surface.hasValidDst = true;
   final transferable = TransferableTypedData.fromList(<Uint8List>[
     surface.dstPtr.asTypedList(surface.byteLen),
   ]);
@@ -1613,9 +1621,12 @@ GeometryProposalNative _executeAnalyzeGeometrySurface(
   ffi.Pointer<FsGeometryProposal> propPtr = ffi.nullptr;
   try {
     propPtr = calloc<FsGeometryProposal>();
+    final inputPtr = (request.useRescuedBuffer && surface.hasValidDst)
+        ? surface.dstPtr
+        : surface.srcPtr;
     final sw = Stopwatch()..start();
     final rc = bindings.fs_geometry_analyze_rgba(
-      surface.srcPtr,
+      inputPtr,
       surface.byteLen,
       surface.width,
       surface.height,
@@ -1904,7 +1915,6 @@ void _writeAtomicRawRgbaFromNative(
   final raf = tmpFile.openSync(mode: FileMode.write);
   try {
     raf.writeFromSync(src.asTypedList(byteLen), 0, byteLen);
-    raf.flushSync();
   } finally {
     raf.closeSync();
   }
@@ -1957,7 +1967,8 @@ ExportRgbaResult _executeRunExportPipeline(
         ..ref.midtone_anchor = dna.midtoneAnchor
         ..ref.highlight_protect = dna.highlightProtect
         ..ref.mode = dna.mode
-        ..ref.enabled = 1;
+        ..ref.enabled = 1
+        ..ref.skin_protect = dna.skinProtect;
       final rc = bindings.fs_dna_rescue_apply_rgba_into(
         bufA,
         curBytes,
@@ -2234,6 +2245,11 @@ ExportRgbaResult _executeRenderCollageToRawFile(
   ffi.Pointer<FsCollageInputSlot> slotsArray = ffi.nullptr;
   ffi.Pointer<FsCollageConfig> configPtr = ffi.nullptr;
   ffi.Pointer<FsDnaRescueParams> dnaPtr = ffi.nullptr;
+  ffi.Pointer<FsNormCropBox> reqBoxPtr = ffi.nullptr;
+  ffi.Pointer<FsNormCropBox> clampedBoxPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Int32> outWPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Int32> outHPtr = ffi.nullptr;
+  ffi.Pointer<FsGeometryParams> geomPtr = ffi.nullptr;
   ffi.Pointer<FsOutputUsmParams> usmPtr = ffi.nullptr;
   ffi.Pointer<ffi.Uint8> outPtr = ffi.nullptr;
 
@@ -2241,10 +2257,12 @@ ExportRgbaResult _executeRenderCollageToRawFile(
     slotsArray = calloc<FsCollageInputSlot>(slots.length);
     for (var i = 0; i < slots.length; i++) {
       final slot = slots[i];
-      final slotBytes = slot.width * slot.height * 4;
-      final ptr = calloc<ffi.Uint8>(slotBytes);
-      slotPtrs.add(ptr);
-      _readExactRawRgbaFileIntoNative(slot.rawInputPath, ptr, slotBytes);
+      var curW = slot.width;
+      var curH = slot.height;
+      var curBytes = curW * curH * 4;
+      var curPtr = calloc<ffi.Uint8>(curBytes);
+      slotPtrs.add(curPtr);
+      _readExactRawRgbaFileIntoNative(slot.rawInputPath, curPtr, curBytes);
 
       final dna = slot.dnaRescue;
       if (dna != null && dna.enabled && dna.shadowLift > 0.0) {
@@ -2256,15 +2274,16 @@ ExportRgbaResult _executeRenderCollageToRawFile(
           ..midtone_anchor = dna.midtoneAnchor
           ..highlight_protect = dna.highlightProtect
           ..mode = dna.mode
-          ..enabled = 1;
+          ..enabled = 1
+          ..skin_protect = dna.skinProtect;
         final dnaRc = bindings.fs_dna_rescue_apply_rgba_into(
-          ptr,
-          slotBytes,
-          slot.width,
-          slot.height,
+          curPtr,
+          curBytes,
+          curW,
+          curH,
           dnaPtr,
-          ptr,
-          slotBytes,
+          curPtr,
+          curBytes,
         );
         if (dnaRc != FsStatusCode.FS_OK.value) {
           sw.stop();
@@ -2278,11 +2297,110 @@ ExportRgbaResult _executeRenderCollageToRawFile(
         }
       }
 
+      final geom = slot.geometry;
+      final needsGeometry = geom != null &&
+          (geom.rotationDeg.abs() > 1e-4 ||
+              geom.aspectPreset != FsAspectPreset.FS_ASPECT_ORIGINAL.value ||
+              geom.cropBox.left > 1e-4 ||
+              geom.cropBox.top > 1e-4 ||
+              geom.cropBox.right < 1.0 - 1e-4 ||
+              geom.cropBox.bottom < 1.0 - 1e-4);
+      if (needsGeometry) {
+        if (reqBoxPtr == ffi.nullptr) reqBoxPtr = calloc<FsNormCropBox>();
+        if (clampedBoxPtr == ffi.nullptr) clampedBoxPtr = calloc<FsNormCropBox>();
+        if (outWPtr == ffi.nullptr) outWPtr = calloc<ffi.Int32>();
+        if (outHPtr == ffi.nullptr) outHPtr = calloc<ffi.Int32>();
+        if (geomPtr == ffi.nullptr) geomPtr = calloc<FsGeometryParams>();
+
+        reqBoxPtr.ref
+          ..left = geom.cropBox.left
+          ..top = geom.cropBox.top
+          ..right = geom.cropBox.right
+          ..bottom = geom.cropBox.bottom;
+
+        final clampRc = bindings.fs_geometry_clamp_crop(
+          curW,
+          curH,
+          geom.rotationDeg,
+          geom.aspectPreset,
+          reqBoxPtr,
+          clampedBoxPtr,
+          outWPtr,
+          outHPtr,
+        );
+        if (clampRc != FsStatusCode.FS_OK.value) {
+          sw.stop();
+          return ExportRgbaResult(
+            statusCode: clampRc,
+            renderTimeMicros: sw.elapsedMicroseconds,
+            width: cfg.canvasWidth,
+            height: cfg.canvasHeight,
+            rawOutputPath: request.rawOutputPath,
+          );
+        }
+
+        final nextW = outWPtr.value;
+        final nextH = outHPtr.value;
+        final nextDimErr = _validateRgbaDimensions(nextW, nextH);
+        if (nextDimErr != null) {
+          sw.stop();
+          return ExportRgbaResult(
+            statusCode: nextDimErr,
+            renderTimeMicros: sw.elapsedMicroseconds,
+            width: cfg.canvasWidth,
+            height: cfg.canvasHeight,
+            rawOutputPath: request.rawOutputPath,
+          );
+        }
+
+        final nextBytes = nextW * nextH * 4;
+        geomPtr.ref
+          ..rotation_deg = geom.rotationDeg
+          ..aspect_preset = geom.aspectPreset
+          ..crop_box.left = clampedBoxPtr.ref.left
+          ..crop_box.top = clampedBoxPtr.ref.top
+          ..crop_box.right = clampedBoxPtr.ref.right
+          ..crop_box.bottom = clampedBoxPtr.ref.bottom
+          ..high_quality = geom.highQuality ? 1 : 0;
+
+        final nextPtr = calloc<ffi.Uint8>(nextBytes);
+        slotPtrs.add(nextPtr);
+
+        final geomRc = bindings.fs_geometry_render_rgba_into(
+          curPtr,
+          curBytes,
+          curW,
+          curH,
+          geomPtr,
+          nextPtr,
+          nextBytes,
+          nextW,
+          nextH,
+        );
+        if (geomRc != FsStatusCode.FS_OK.value) {
+          sw.stop();
+          return ExportRgbaResult(
+            statusCode: geomRc,
+            renderTimeMicros: sw.elapsedMicroseconds,
+            width: cfg.canvasWidth,
+            height: cfg.canvasHeight,
+            rawOutputPath: request.rawOutputPath,
+          );
+        }
+
+        slotPtrs.remove(curPtr);
+        calloc.free(curPtr);
+        curPtr = nextPtr;
+        curW = nextW;
+        curH = nextH;
+        curBytes = nextBytes;
+      }
+
       slotsArray[i]
-        ..rgba = ptr
-        ..rgba_len = slotBytes
-        ..width = slot.width
-        ..height = slot.height
+        ..rgba = curPtr
+        ..rgba_len = curBytes
+        ..width = curW
+        ..height = curH
         ..pan_x = slot.panX
         ..pan_y = slot.panY
         ..zoom = slot.zoom
@@ -2371,6 +2489,11 @@ ExportRgbaResult _executeRenderCollageToRawFile(
   } finally {
     if (outPtr != ffi.nullptr) calloc.free(outPtr);
     if (usmPtr != ffi.nullptr) calloc.free(usmPtr);
+    if (geomPtr != ffi.nullptr) calloc.free(geomPtr);
+    if (outHPtr != ffi.nullptr) calloc.free(outHPtr);
+    if (outWPtr != ffi.nullptr) calloc.free(outWPtr);
+    if (clampedBoxPtr != ffi.nullptr) calloc.free(clampedBoxPtr);
+    if (reqBoxPtr != ffi.nullptr) calloc.free(reqBoxPtr);
     if (dnaPtr != ffi.nullptr) calloc.free(dnaPtr);
     if (configPtr != ffi.nullptr) calloc.free(configPtr);
     if (slotsArray != ffi.nullptr) calloc.free(slotsArray);
@@ -2398,6 +2521,7 @@ final class _StudioSurface {
   ffi.Pointer<ffi.Uint8> dstPtr;
   ffi.Pointer<FsDnaRescueParams> paramsPtr;
   ffi.Pointer<FsDnaRescueSuggestion> suggestionPtr;
+  bool hasValidDst = false;
 
   void dispose() {
     if (suggestionPtr != ffi.nullptr) {
@@ -2560,10 +2684,12 @@ final class _AnalyzeGeometrySurfaceRequest extends _WorkerRequest {
     required super.id,
     required this.surfaceId,
     required this.targetAspectPreset,
+    this.useRescuedBuffer = false,
   });
 
   final int surfaceId;
   final int targetAspectPreset;
+  final bool useRescuedBuffer;
 }
 
 final class _RenderGeometrySurfaceRequest extends _WorkerRequest {

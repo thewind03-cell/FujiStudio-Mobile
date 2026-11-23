@@ -331,84 +331,98 @@ FS_API int32_t fs_export_output_usm_rgba_into(
     const float threshold = std::clamp(params->threshold, 0.0f, 20.0f);
     const float halo_clamp = std::clamp(params->halo_clamp, 0.0f, 40.0f);
 
-    const size_t pixel_count =
-        static_cast<size_t>(width) * static_cast<size_t>(height);
-
-    // Step 1: Rec.709 Luma plane (0..255)
-    std::vector<float> luma(pixel_count);
-    for (size_t idx = 0; idx < pixel_count; ++idx) {
-      const size_t i = idx * 4u;
-      const float r = static_cast<float>(input_rgba[i + 0u]);
-      const float g = static_cast<float>(input_rgba[i + 1u]);
-      const float b = static_cast<float>(input_rgba[i + 2u]);
-      luma[idx] = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-    }
-
-    // Step 2: Separable 1D Gaussian blur on Luma
     const std::vector<float> kernel = build_gaussian_1d_kernel(radius);
     const int32_t k_rad = static_cast<int32_t>(kernel.size() - 1u) / 2;
+    const int32_t win_rows = 2 * k_rad + 1;
+    const size_t w_sz = static_cast<size_t>(width);
 
-    std::vector<float> luma_tmp(pixel_count);
-    std::vector<float> luma_blur(pixel_count);
+    // Rolling ring-buffer over horizontally-blurred luma rows:
+    // allocates ~11 rows instead of 3 full-frame float planes (~637 MB at 40MP).
+    std::vector<float> row_luma(w_sz);
+    std::vector<float> ring_hblur(static_cast<size_t>(win_rows) * w_sz);
 
-    // Horizontal pass
-    for (int32_t y = 0; y < height; ++y) {
-      const size_t row_off = static_cast<size_t>(y) * static_cast<size_t>(width);
+    auto fill_hblur_row = [&](int32_t r) {
+      const uint8_t* src_row =
+          input_rgba + static_cast<size_t>(r) * w_sz * 4u;
+      for (int32_t x = 0; x < width; ++x) {
+        const size_t i = static_cast<size_t>(x) * 4u;
+        const float pr = static_cast<float>(src_row[i + 0u]);
+        const float pg = static_cast<float>(src_row[i + 1u]);
+        const float pb = static_cast<float>(src_row[i + 2u]);
+        row_luma[static_cast<size_t>(x)] =
+            0.2126f * pr + 0.7152f * pg + 0.0722f * pb;
+      }
+
+      float* dst_ring =
+          ring_hblur.data() + static_cast<size_t>(r % win_rows) * w_sz;
       for (int32_t x = 0; x < width; ++x) {
         float acc = 0.0f;
         for (int32_t k = -k_rad; k <= k_rad; ++k) {
           const int32_t sx = std::clamp(x + k, 0, width - 1);
           acc += kernel[static_cast<size_t>(k + k_rad)] *
-                 luma[row_off + static_cast<size_t>(sx)];
+                 row_luma[static_cast<size_t>(sx)];
         }
-        luma_tmp[row_off + static_cast<size_t>(x)] = acc;
+        dst_ring[static_cast<size_t>(x)] = acc;
       }
+    };
+
+    // Pre-fill rows [0 .. min(height - 1, k_rad)] before writing any output.
+    const int32_t prefill_end = std::min(height - 1, k_rad);
+    for (int32_t r = 0; r <= prefill_end; ++r) {
+      fill_hblur_row(r);
     }
 
-    // Vertical pass
+    // Process row y: read-ahead row (y + k_rad) from unmodified input_rgba
+    // BEFORE overwriting row y in-place.
     for (int32_t y = 0; y < height; ++y) {
-      const size_t row_off = static_cast<size_t>(y) * static_cast<size_t>(width);
+      if (y > 0 && y + k_rad < height) {
+        fill_hblur_row(y + k_rad);
+      }
+
+      const size_t row_byte_off = static_cast<size_t>(y) * w_sz * 4u;
+      const uint8_t* in_row = input_rgba + row_byte_off;
+      uint8_t* out_row = out_rgba + row_byte_off;
+
       for (int32_t x = 0; x < width; ++x) {
-        float acc = 0.0f;
-        for (int32_t k = -k_rad; k <= k_rad; ++k) {
-          const int32_t sy = std::clamp(y + k, 0, height - 1);
-          acc += kernel[static_cast<size_t>(k + k_rad)] *
-                 luma_tmp[static_cast<size_t>(sy) * static_cast<size_t>(width) +
-                          static_cast<size_t>(x)];
+        float y_blur = 0.0f;
+        for (int32_t dy = -k_rad; dy <= k_rad; ++dy) {
+          const int32_t sy = std::clamp(y + dy, 0, height - 1);
+          y_blur += kernel[static_cast<size_t>(dy + k_rad)] *
+                    ring_hblur[static_cast<size_t>(sy % win_rows) * w_sz +
+                               static_cast<size_t>(x)];
         }
-        luma_blur[row_off + static_cast<size_t>(x)] = acc;
+
+        const size_t i = static_cast<size_t>(x) * 4u;
+        const uint8_t in_r = in_row[i + 0u];
+        const uint8_t in_g = in_row[i + 1u];
+        const uint8_t in_b = in_row[i + 2u];
+        const uint8_t in_a = in_row[i + 3u];
+
+        const float y_orig =
+            0.2126f * static_cast<float>(in_r) +
+            0.7152f * static_cast<float>(in_g) +
+            0.0722f * static_cast<float>(in_b);
+        const float diff = y_orig - y_blur;
+        const float abs_diff = std::abs(diff);
+
+        float delta = 0.0f;
+        if (abs_diff > threshold) {
+          const float eff_diff = std::copysign(abs_diff - threshold, diff);
+          const float raw_delta = amount * eff_diff;
+          delta = std::clamp(raw_delta, -halo_clamp, halo_clamp);
+        }
+
+        const float taper = std::clamp(
+            std::min(y_orig / 16.0f, (255.0f - y_orig) / 16.0f),
+            0.0f,
+            1.0f);
+        const float final_delta = delta * taper;
+
+        out_row[i + 0u] = clamp_float_to_u8(static_cast<float>(in_r) + final_delta);
+        out_row[i + 1u] = clamp_float_to_u8(static_cast<float>(in_g) + final_delta);
+        out_row[i + 2u] = clamp_float_to_u8(static_cast<float>(in_b) + final_delta);
+        out_row[i + 3u] = in_a;
       }
-    }
-
-    // Step 3 & 4: Soft-thresholded, halo-clamped, shadow/highlight-tapered luma USM
-    for (size_t idx = 0; idx < pixel_count; ++idx) {
-      const float y_orig = luma[idx];
-      const float diff = y_orig - luma_blur[idx];
-      const float abs_diff = std::abs(diff);
-
-      float delta = 0.0f;
-      if (abs_diff > threshold) {
-        const float eff_diff = std::copysign(abs_diff - threshold, diff);
-        const float raw_delta = amount * eff_diff;
-        delta = std::clamp(raw_delta, -halo_clamp, halo_clamp);
-      }
-
-      const float taper = std::clamp(
-          std::min(y_orig / 16.0f, (255.0f - y_orig) / 16.0f),
-          0.0f,
-          1.0f);
-      const float final_delta = delta * taper;
-
-      const size_t i = idx * 4u;
-      const uint8_t in_r = input_rgba[i + 0u];
-      const uint8_t in_g = input_rgba[i + 1u];
-      const uint8_t in_b = input_rgba[i + 2u];
-      const uint8_t in_a = input_rgba[i + 3u];
-
-      out_rgba[i + 0u] = clamp_float_to_u8(static_cast<float>(in_r) + final_delta);
-      out_rgba[i + 1u] = clamp_float_to_u8(static_cast<float>(in_g) + final_delta);
-      out_rgba[i + 2u] = clamp_float_to_u8(static_cast<float>(in_b) + final_delta);
-      out_rgba[i + 3u] = in_a;
     }
 
     return FS_OK;
