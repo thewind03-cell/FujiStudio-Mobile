@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/session_picker/session_controller.dart';
+import '../../features/social_export/mobile_export_log_store.dart';
+import '../../features/social_export/social_export_service.dart';
 import '../../features/story_collage/story_collage_controller.dart';
 import '../../features/studio_editor/studio_editor_controller.dart';
 import '../ffi/native_worker.dart';
@@ -60,3 +62,19 @@ final collageNativeGatewayProvider = Provider<StoryCollageNativeGateway>(
 final collageSlotLoaderProvider = Provider<StoryCollageSlotLoader?>(
   (ref) => null,
 );
+
+final mobileExportLogStoreProvider =
+    ChangeNotifierProvider<MobileExportLogStore>((ref) {
+      return MobileExportLogStore(
+        storageGateway: ref.watch(storageGatewayProvider),
+      );
+    });
+
+final socialExportServiceProvider = Provider<SocialExportService>((ref) {
+  return SocialExportService(
+    storageGateway: ref.watch(storageGatewayProvider),
+    nativeWorker: ref.watch(nativeWorkerProvider),
+    exportLogStore: ref.watch(mobileExportLogStoreProvider),
+    sessionController: ref.watch(sessionControllerProvider.notifier),
+  );
+});

@@ -14,7 +14,7 @@ import 'dna_rescue_mapper.dart';
 import 'geometry_mapper.dart';
 
 /// Active editing tool tab inside [StudioEditorScreen].
-enum StudioToolTab { dnaRescue, geometry }
+enum StudioToolTab { dnaRescue, geometry, export }
 
 /// Abstraction over [NativeWorker]'s Resident Studio Surface APIs so
 /// [StudioEditorController] can be deterministic and unit-tested with fakes.
@@ -175,6 +175,7 @@ final class StudioEditorState {
 
   DnaRescueSpec get spec => recipe.dnaRescue;
   GeometrySpec get geometry => recipe.geometry;
+  ExportProfileSpec get exportProfile => recipe.exportProfile;
 
   bool get canReset =>
       DnaRescueMapper.isEdited(spec) || GeometryMapper.isEdited(geometry);
@@ -373,6 +374,17 @@ final class StudioEditorController extends ChangeNotifier {
   void setActiveTool(StudioToolTab tool) {
     if (_disposed || _state.activeTool == tool) return;
     _state = _state.copyWith(activeTool: tool);
+    notifyListeners();
+  }
+
+  /// Updates the non-visual [ExportProfileSpec] and persists it through
+  /// [SessionController] without altering the visual Undo/Redo stack.
+  void updateExportProfile(ExportProfileSpec nextProfile) {
+    if (_disposed) return;
+    final nextRecipe = _state.recipe.copyWith(exportProfile: nextProfile);
+    _committedRecipe = _committedRecipe.copyWith(exportProfile: nextProfile);
+    _state = _state.copyWith(recipe: nextRecipe);
+    _persistRecipe(nextRecipe);
     notifyListeners();
   }
 

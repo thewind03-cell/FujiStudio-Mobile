@@ -170,6 +170,10 @@ final class SessionController extends StateNotifier<SessionState> {
     return 'item_$hash';
   }
 
+  /// Safely reads the active album key without exposing protected
+  /// `StateNotifier.state` outside this controller.
+  String? get currentAlbumKey => state.albumKey;
+
   /// Safely reads the current [EditRecipe] for [itemId] without exposing
   /// protected `StateNotifier.state` outside this controller.
   EditRecipe? editRecipeForItem(String itemId) {

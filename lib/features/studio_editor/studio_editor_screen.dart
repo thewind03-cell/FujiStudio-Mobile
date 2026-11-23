@@ -13,6 +13,8 @@ import '../../core/schema/action_proposal.dart';
 import '../../core/schema/edit_recipe.dart';
 import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/theme/fuji_theme.dart';
+import '../social_export/export_options_deck.dart';
+import '../social_export/social_export_service.dart';
 import 'dna_rescue_mapper.dart';
 import 'geometry_mapper.dart';
 import 'studio_editor_controller.dart';
@@ -41,6 +43,9 @@ class _StudioEditorScreenState extends ConsumerState<StudioEditorScreen> {
   bool _wasSnappedZero = true;
   bool _allowPop = false;
   bool _isPopping = false;
+  bool _isExporting = false;
+  SocialExportResult? _lastExportResult;
+  String? _exportError;
 
   @override
   void initState() {
@@ -82,6 +87,54 @@ class _StudioEditorScreenState extends ConsumerState<StudioEditorScreen> {
     } finally {
       if (mounted && !_allowPop) {
         _isPopping = false;
+      }
+    }
+  }
+
+  Future<void> _executeExport() async {
+    if (_isExporting) return;
+    setState(() {
+      _isExporting = true;
+      _exportError = null;
+    });
+    try {
+      await _controller.flushPendingSave();
+      final result = await ref.read(socialExportServiceProvider).exportSingleItem(
+            itemId: widget.itemId,
+            pairedAsset: widget.pairedAsset,
+            recipe: _controller.state.recipe,
+          );
+      if (!mounted) return;
+      setState(() {
+        _lastExportResult = result;
+        _exportError = null;
+      });
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Đã xuất: ${result.formatSummary()}'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _exportError = error.toString();
+      });
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Lỗi xuất ảnh: $error'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
       }
     }
   }
@@ -129,11 +182,15 @@ class _StudioEditorScreenState extends ConsumerState<StudioEditorScreen> {
                 activeTool: state.activeTool,
                 spec: spec,
                 geometry: geom,
+                exportProfile: state.exportProfile,
                 pendingProposal: state.pendingProposal,
                 isDeepMode: isDeepMode,
                 isAnalyzing: state.isAnalyzing,
                 isAnalyzingGeometry: state.isAnalyzingGeometry,
                 isDraggingSlider: _isDraggingSlider,
+                isExporting: _isExporting,
+                lastExportResult: _lastExportResult,
+                exportError: _exportError,
                 onSelectTool: _controller.setActiveTool,
                 onToggleEnabled: () {
                   unawaited(HapticFeedback.selectionClick());
@@ -214,6 +271,8 @@ class _StudioEditorScreenState extends ConsumerState<StudioEditorScreen> {
                   unawaited(HapticFeedback.selectionClick());
                   _controller.selectAspectRatio(preset);
                 },
+                onUpdateExportProfile: _controller.updateExportProfile,
+                onExecuteExport: () => unawaited(_executeExport()),
               ),
             ],
           ),
@@ -973,11 +1032,15 @@ class _StudioControlDeck extends StatelessWidget {
     required this.activeTool,
     required this.spec,
     required this.geometry,
+    required this.exportProfile,
     required this.pendingProposal,
     required this.isDeepMode,
     required this.isAnalyzing,
     required this.isAnalyzingGeometry,
     required this.isDraggingSlider,
+    required this.isExporting,
+    required this.lastExportResult,
+    required this.exportError,
     required this.onSelectTool,
     required this.onToggleEnabled,
     required this.onAutoRescue,
@@ -993,16 +1056,22 @@ class _StudioControlDeck extends StatelessWidget {
     required this.onDialChanged,
     required this.onDialEnd,
     required this.onSelectAspect,
+    required this.onUpdateExportProfile,
+    required this.onExecuteExport,
   });
 
   final StudioToolTab activeTool;
   final DnaRescueSpec spec;
   final GeometrySpec geometry;
+  final ExportProfileSpec exportProfile;
   final ActionProposal? pendingProposal;
   final bool isDeepMode;
   final bool isAnalyzing;
   final bool isAnalyzingGeometry;
   final bool isDraggingSlider;
+  final bool isExporting;
+  final SocialExportResult? lastExportResult;
+  final String? exportError;
   final ValueChanged<StudioToolTab> onSelectTool;
   final VoidCallback onToggleEnabled;
   final VoidCallback onAutoRescue;
@@ -1018,6 +1087,8 @@ class _StudioControlDeck extends StatelessWidget {
   final ValueChanged<double> onDialChanged;
   final VoidCallback onDialEnd;
   final ValueChanged<int> onSelectAspect;
+  final ValueChanged<ExportProfileSpec> onUpdateExportProfile;
+  final VoidCallback onExecuteExport;
 
   @override
   Widget build(BuildContext context) {
@@ -1034,8 +1105,10 @@ class _StudioControlDeck extends StatelessWidget {
         children: <Widget>[
           if (activeTool == StudioToolTab.dnaRescue)
             _buildDnaRescueDeck(context)
+          else if (activeTool == StudioToolTab.geometry)
+            _buildGeometryDeck()
           else
-            _buildGeometryDeck(),
+            _buildExportDeck(context),
           const SizedBox(height: 6),
           // Bottom tool selector
           Container(
@@ -1067,8 +1140,8 @@ class _StudioControlDeck extends StatelessWidget {
                   child: _ToolTab(
                     key: const Key('studio_tab_export'),
                     label: 'XUẤT 2048',
-                    active: false,
-                    onTap: () => _showPlaceholder(context, 'Sẵn sàng ở Lát cắt 4'),
+                    active: activeTool == StudioToolTab.export,
+                    onTap: () => onSelectTool(StudioToolTab.export),
                   ),
                 ),
               ],
@@ -1388,15 +1461,81 @@ class _StudioControlDeck extends StatelessWidget {
     );
   }
 
-  static void _showPlaceholder(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(msg),
-          duration: const Duration(seconds: 2),
+  Widget _buildExportDeck(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        ExportOptionsDeck(
+          profile: exportProfile,
+          enabled: !isExporting,
+          onChanged: onUpdateExportProfile,
         ),
-      );
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 36,
+          child: FilledButton(
+            key: const Key('studio_export_execute_button'),
+            onPressed: isExporting ? null : onExecuteExport,
+            style: FilledButton.styleFrom(
+              backgroundColor: FujiColors.accent,
+              foregroundColor: FujiColors.canvas,
+              disabledBackgroundColor: FujiColors.border,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                if (isExporting) ...<Widget>[
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: FujiColors.canvas,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                Flexible(
+                  child: Text(
+                    isExporting
+                        ? 'ĐANG XUẤT...'
+                        : '↑ XUẤT VÀO PICTURES/FUJISTUDIO',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (lastExportResult != null || exportError != null) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            exportError ?? lastExportResult!.formatSummary(),
+            key: const Key('studio_export_result_banner'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: exportError != null ? FujiColors.reject : FujiColors.keep,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              fontFeatures: FujiTheme.tabularFeatures,
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
 
