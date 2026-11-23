@@ -35,6 +35,38 @@ final class ProxyDecodeResult {
   final int byteSize;
 }
 
+/// Result of decoding a source image into an oriented RGBA8888 raw file for export.
+@immutable
+final class DecodedExportRawResult {
+  const DecodedExportRawResult({
+    required this.width,
+    required this.height,
+    required this.rawPath,
+  });
+
+  final int width;
+  final int height;
+  final String rawPath;
+}
+
+/// Result of encoding an RGBA8888 raw file and saving it to the device gallery.
+@immutable
+final class SavedExportResult {
+  const SavedExportResult({
+    required this.contentUri,
+    required this.displayName,
+    required this.byteSize,
+    required this.width,
+    required this.height,
+  });
+
+  final String contentUri;
+  final String displayName;
+  final int byteSize;
+  final int width;
+  final int height;
+}
+
 /// Platform-agnostic album/bucket descriptor returned by [StorageGateway].
 @immutable
 final class MediaAlbumDescriptor {
@@ -109,4 +141,26 @@ abstract interface class StorageGateway {
   Future<String> getProxyCacheDirectory();
 
   Future<String> getSessionStorageDirectory();
+
+  Future<String> getExportTempDirectory();
+
+  Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
+    required String source,
+    required bool isContentUri,
+    required String outRawPath,
+    required int maxDecodeLongEdge,
+    int? orientationOverride,
+  });
+
+  Future<SavedExportResult> encodeRgbaFileAndSaveExport({
+    required String rawRgbaPath,
+    required int width,
+    required int height,
+    required int jpegQuality,
+    required String displayName,
+    String? exifSource,
+    bool exifSourceIsContentUri = true,
+    required bool preserveExif,
+    required bool stripGps,
+  });
 }

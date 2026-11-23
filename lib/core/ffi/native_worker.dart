@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
+import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -281,6 +283,65 @@ final class CollageRenderResult {
   final int width;
   final int height;
   final Uint8List? rgbaBytes;
+
+  bool get isOk => statusCode == FsStatusCode.FS_OK.value;
+  double get renderTimeMs => renderTimeMicros / 1000.0;
+}
+
+/// Output Unsharp Mask parameters passed to [NativeWorker].
+final class OutputUsmNativeParams {
+  const OutputUsmNativeParams({
+    required this.amount,
+    this.radius = 0.85,
+    this.threshold = 3.0,
+    this.haloClamp = 18.0,
+    this.enabled = true,
+  });
+
+  final double amount;
+  final double radius;
+  final double threshold;
+  final double haloClamp;
+  final bool enabled;
+}
+
+/// File-backed RGBA slot payload sent to [NativeWorker.renderCollageToRawFile].
+final class CollageRawFileSlot {
+  const CollageRawFileSlot({
+    required this.rawInputPath,
+    required this.width,
+    required this.height,
+    this.panX = 0.0,
+    this.panY = 0.0,
+    this.zoom = 1.0,
+    this.dnaRescue,
+  });
+
+  final String rawInputPath;
+  final int width;
+  final int height;
+  final double panX;
+  final double panY;
+  final double zoom;
+  final DnaRescueNativeParams? dnaRescue;
+}
+
+/// Metadata-only result returned by [NativeWorker.runExportPipelineOnRawFile]
+/// and [NativeWorker.renderCollageToRawFile] (never shuttles RGBA buffers).
+final class ExportRgbaResult {
+  const ExportRgbaResult({
+    required this.statusCode,
+    required this.renderTimeMicros,
+    required this.width,
+    required this.height,
+    required this.rawOutputPath,
+  });
+
+  final int statusCode;
+  final int renderTimeMicros;
+  final int width;
+  final int height;
+  final String rawOutputPath;
 
   bool get isOk => statusCode == FsStatusCode.FS_OK.value;
   double get renderTimeMs => renderTimeMicros / 1000.0;
@@ -633,6 +694,58 @@ final class NativeWorker {
     );
   }
 
+  /// Runs the deterministic full-res export pipeline directly on a disk-backed
+  /// RGBA8888 file (`rawInputPath`) inside the Worker Isolate:
+  /// 1) DNA Rescue v2 (in-place)
+  /// 2) Horizon & Crop Catmull-Rom (highQuality=1, only if rotated/cropped)
+  /// 3) Lanczos3 Downscale (only if `max(w, h) > targetMaxLongEdge`, no upscale)
+  /// 4) Output USM (in-place)
+  /// 5) Atomic write to `rawOutputPath`
+  Future<ExportRgbaResult> runExportPipelineOnRawFile({
+    required String rawInputPath,
+    required int srcWidth,
+    required int srcHeight,
+    required String rawOutputPath,
+    required DnaRescueNativeParams? dnaRescue,
+    required GeometryNativeParams? geometry,
+    required int targetMaxLongEdge,
+    required OutputUsmNativeParams? outputUsm,
+  }) async {
+    return _sendRequest<ExportRgbaResult>(
+      (id) => _RunExportPipelineRequest(
+        id: id,
+        rawInputPath: rawInputPath,
+        srcWidth: srcWidth,
+        srcHeight: srcHeight,
+        rawOutputPath: rawOutputPath,
+        dnaRescue: dnaRescue,
+        geometry: geometry,
+        targetMaxLongEdge: targetMaxLongEdge,
+        outputUsm: outputUsm,
+      ),
+    );
+  }
+
+  /// Reads 2-4 disk-backed RGBA slot files, applies optional per-slot DNA Rescue
+  /// in-place, stitches the collage canvas, applies optional Output USM in-place,
+  /// and atomically writes the resulting RGBA8888 buffer to [rawOutputPath].
+  Future<ExportRgbaResult> renderCollageToRawFile({
+    required List<CollageRawFileSlot> slots,
+    required CollageNativeConfig config,
+    required OutputUsmNativeParams? outputUsm,
+    required String rawOutputPath,
+  }) async {
+    return _sendRequest<ExportRgbaResult>(
+      (id) => _RenderCollageToRawFileRequest(
+        id: id,
+        slots: List<CollageRawFileSlot>.unmodifiable(slots),
+        config: config,
+        outputUsm: outputUsm,
+        rawOutputPath: rawOutputPath,
+      ),
+    );
+  }
+
   /// Idempotently shuts down the background Isolate and releases all ports.
   ///
   /// Concurrent or repeated calls return the exact same [Future] and complete
@@ -968,6 +1081,30 @@ void _workerEntryPoint(_WorkerBootstrap bootstrap) {
         try {
           final payload = _executeRenderCollage(bindings, message);
           responsePort?.send(_WorkerResponse(id: message.id, payload: payload));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _RunExportPipelineRequest) {
+        try {
+          final result = _executeRunExportPipeline(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
+        } catch (error) {
+          responsePort?.send(
+            _WorkerResponse(id: message.id, error: error.toString()),
+          );
+        }
+        return;
+      }
+
+      if (message is _RenderCollageToRawFileRequest) {
+        try {
+          final result = _executeRenderCollageToRawFile(bindings, message);
+          responsePort?.send(_WorkerResponse(id: message.id, payload: result));
         } catch (error) {
           responsePort?.send(
             _WorkerResponse(id: message.id, error: error.toString()),
@@ -1725,6 +1862,524 @@ _CollageRenderPayload _executeRenderCollage(
   }
 }
 
+void _readExactRawRgbaFileIntoNative(
+  String path,
+  ffi.Pointer<ffi.Uint8> dst,
+  int expectedBytes,
+) {
+  final file = File(path);
+  if (!file.existsSync()) {
+    throw StateError('Raw RGBA input file not found: $path');
+  }
+  final raf = file.openSync(mode: FileMode.read);
+  try {
+    final len = raf.lengthSync();
+    if (len < expectedBytes) {
+      throw StateError(
+        'Raw RGBA file $path truncated ($len < $expectedBytes bytes).',
+      );
+    }
+    final view = dst.asTypedList(expectedBytes);
+    var offset = 0;
+    while (offset < expectedBytes) {
+      final n = raf.readIntoSync(view, offset, expectedBytes);
+      if (n <= 0) {
+        throw StateError('Unexpected EOF reading $path at $offset.');
+      }
+      offset += n;
+    }
+  } finally {
+    raf.closeSync();
+  }
+}
+
+void _writeAtomicRawRgbaFromNative(
+  String outPath,
+  ffi.Pointer<ffi.Uint8> src,
+  int byteLen,
+) {
+  final outFile = File(outPath);
+  outFile.parent.createSync(recursive: true);
+  final tmpFile = File('$outPath.tmp');
+  final raf = tmpFile.openSync(mode: FileMode.write);
+  try {
+    raf.writeFromSync(src.asTypedList(byteLen), 0, byteLen);
+    raf.flushSync();
+  } finally {
+    raf.closeSync();
+  }
+  if (outFile.existsSync()) {
+    outFile.deleteSync();
+  }
+  tmpFile.renameSync(outPath);
+}
+
+ExportRgbaResult _executeRunExportPipeline(
+  FujiStudioBindings bindings,
+  _RunExportPipelineRequest request,
+) {
+  final sw = Stopwatch()..start();
+  final srcDimErr = _validateRgbaDimensions(request.srcWidth, request.srcHeight);
+  if (srcDimErr != null) {
+    sw.stop();
+    return ExportRgbaResult(
+      statusCode: srcDimErr,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: 0,
+      height: 0,
+      rawOutputPath: request.rawOutputPath,
+    );
+  }
+
+  var curW = request.srcWidth;
+  var curH = request.srcHeight;
+  var curBytes = curW * curH * 4;
+
+  ffi.Pointer<ffi.Uint8> bufA = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> bufB = ffi.nullptr;
+  ffi.Pointer<FsDnaRescueParams> dnaPtr = ffi.nullptr;
+  ffi.Pointer<FsNormCropBox> reqBoxPtr = ffi.nullptr;
+  ffi.Pointer<FsNormCropBox> clampedBoxPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Int32> outWPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Int32> outHPtr = ffi.nullptr;
+  ffi.Pointer<FsGeometryParams> geomPtr = ffi.nullptr;
+  ffi.Pointer<FsOutputUsmParams> usmPtr = ffi.nullptr;
+
+  try {
+    bufA = calloc<ffi.Uint8>(curBytes);
+    _readExactRawRgbaFileIntoNative(request.rawInputPath, bufA, curBytes);
+
+    // 1. Zero-Haze DNA Rescue v2 (in-place on bufA)
+    final dna = request.dnaRescue;
+    if (dna != null && dna.enabled && dna.shadowLift > 0.0) {
+      dnaPtr = calloc<FsDnaRescueParams>()
+        ..ref.shadow_lift = dna.shadowLift
+        ..ref.midtone_anchor = dna.midtoneAnchor
+        ..ref.highlight_protect = dna.highlightProtect
+        ..ref.mode = dna.mode
+        ..ref.enabled = 1;
+      final rc = bindings.fs_dna_rescue_apply_rgba_into(
+        bufA,
+        curBytes,
+        curW,
+        curH,
+        dnaPtr,
+        bufA,
+        curBytes,
+      );
+      if (rc != FsStatusCode.FS_OK.value) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: rc,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: curW,
+          height: curH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+    }
+
+    // 2. Horizon & Crop Catmull-Rom (high_quality = 1, only when rotated or cropped)
+    final geom = request.geometry;
+    final needsGeometry = geom != null &&
+        (geom.rotationDeg.abs() > 1e-4 ||
+            geom.aspectPreset != FsAspectPreset.FS_ASPECT_ORIGINAL.value ||
+            geom.cropBox.left > 1e-4 ||
+            geom.cropBox.top > 1e-4 ||
+            geom.cropBox.right < 1.0 - 1e-4 ||
+            geom.cropBox.bottom < 1.0 - 1e-4);
+
+    if (needsGeometry) {
+      reqBoxPtr = calloc<FsNormCropBox>()
+        ..ref.left = geom.cropBox.left
+        ..ref.top = geom.cropBox.top
+        ..ref.right = geom.cropBox.right
+        ..ref.bottom = geom.cropBox.bottom;
+      clampedBoxPtr = calloc<FsNormCropBox>();
+      outWPtr = calloc<ffi.Int32>();
+      outHPtr = calloc<ffi.Int32>();
+
+      final clampRc = bindings.fs_geometry_clamp_crop(
+        curW,
+        curH,
+        geom.rotationDeg,
+        geom.aspectPreset,
+        reqBoxPtr,
+        clampedBoxPtr,
+        outWPtr,
+        outHPtr,
+      );
+      if (clampRc != FsStatusCode.FS_OK.value) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: clampRc,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: curW,
+          height: curH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+
+      final nextW = outWPtr.value;
+      final nextH = outHPtr.value;
+      final nextDimErr = _validateRgbaDimensions(nextW, nextH);
+      if (nextDimErr != null) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: nextDimErr,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: nextW,
+          height: nextH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+
+      final nextBytes = nextW * nextH * 4;
+      geomPtr = calloc<FsGeometryParams>()
+        ..ref.rotation_deg = geom.rotationDeg
+        ..ref.aspect_preset = geom.aspectPreset
+        ..ref.crop_box.left = clampedBoxPtr.ref.left
+        ..ref.crop_box.top = clampedBoxPtr.ref.top
+        ..ref.crop_box.right = clampedBoxPtr.ref.right
+        ..ref.crop_box.bottom = clampedBoxPtr.ref.bottom
+        ..ref.high_quality = 1;
+
+      bufB = calloc<ffi.Uint8>(nextBytes);
+      final renderRc = bindings.fs_geometry_render_rgba_into(
+        bufA,
+        curBytes,
+        curW,
+        curH,
+        geomPtr,
+        bufB,
+        nextBytes,
+        nextW,
+        nextH,
+      );
+      if (renderRc != FsStatusCode.FS_OK.value) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: renderRc,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: nextW,
+          height: nextH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+
+      // Immediately free previous full-res buffer before proceeding.
+      calloc.free(bufA);
+      bufA = bufB;
+      bufB = ffi.nullptr;
+      curW = nextW;
+      curH = nextH;
+      curBytes = nextBytes;
+    }
+
+    // 3. Lanczos3 Downscale (strictly no upscale)
+    final maxEdge = request.targetMaxLongEdge;
+    if (maxEdge > 0 && math.max(curW, curH) > maxEdge) {
+      final int dstW;
+      final int dstH;
+      if (curW >= curH) {
+        dstW = maxEdge;
+        dstH = math.max(1, (curH * maxEdge / curW).round());
+      } else {
+        dstH = maxEdge;
+        dstW = math.max(1, (curW * maxEdge / curH).round());
+      }
+      final dstDimErr = _validateRgbaDimensions(dstW, dstH);
+      if (dstDimErr != null) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: dstDimErr,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: dstW,
+          height: dstH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+
+      final dstBytes = dstW * dstH * 4;
+      bufB = calloc<ffi.Uint8>(dstBytes);
+      final resizeRc = bindings.fs_export_lanczos3_resize_rgba_into(
+        bufA,
+        curBytes,
+        curW,
+        curH,
+        bufB,
+        dstBytes,
+        dstW,
+        dstH,
+      );
+      if (resizeRc != FsStatusCode.FS_OK.value) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: resizeRc,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: dstW,
+          height: dstH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+
+      calloc.free(bufA);
+      bufA = bufB;
+      bufB = ffi.nullptr;
+      curW = dstW;
+      curH = dstH;
+      curBytes = dstBytes;
+    }
+
+    // 4. Output USM (in-place on bufA)
+    final usm = request.outputUsm;
+    if (usm != null && usm.enabled && usm.amount > 0.0) {
+      usmPtr = calloc<FsOutputUsmParams>()
+        ..ref.amount = usm.amount
+        ..ref.radius = usm.radius
+        ..ref.threshold = usm.threshold
+        ..ref.halo_clamp = usm.haloClamp
+        ..ref.enabled = 1;
+      final usmRc = bindings.fs_export_output_usm_rgba_into(
+        bufA,
+        curBytes,
+        curW,
+        curH,
+        usmPtr,
+        bufA,
+        curBytes,
+      );
+      if (usmRc != FsStatusCode.FS_OK.value) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: usmRc,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: curW,
+          height: curH,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+    }
+
+    // 5. Atomic write to rawOutputPath
+    _writeAtomicRawRgbaFromNative(request.rawOutputPath, bufA, curBytes);
+    sw.stop();
+    return ExportRgbaResult(
+      statusCode: FsStatusCode.FS_OK.value,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: curW,
+      height: curH,
+      rawOutputPath: request.rawOutputPath,
+    );
+  } finally {
+    if (usmPtr != ffi.nullptr) calloc.free(usmPtr);
+    if (geomPtr != ffi.nullptr) calloc.free(geomPtr);
+    if (outHPtr != ffi.nullptr) calloc.free(outHPtr);
+    if (outWPtr != ffi.nullptr) calloc.free(outWPtr);
+    if (clampedBoxPtr != ffi.nullptr) calloc.free(clampedBoxPtr);
+    if (reqBoxPtr != ffi.nullptr) calloc.free(reqBoxPtr);
+    if (dnaPtr != ffi.nullptr) calloc.free(dnaPtr);
+    if (bufB != ffi.nullptr) calloc.free(bufB);
+    if (bufA != ffi.nullptr) calloc.free(bufA);
+  }
+}
+
+ExportRgbaResult _executeRenderCollageToRawFile(
+  FujiStudioBindings bindings,
+  _RenderCollageToRawFileRequest request,
+) {
+  final sw = Stopwatch()..start();
+  final slots = request.slots;
+  final cfg = request.config;
+
+  if (slots.length < 2 || slots.length > 4) {
+    sw.stop();
+    return ExportRgbaResult(
+      statusCode: FsStatusCode.FS_ERR_COLLAGE_INVALID_SLOTS.value,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: cfg.canvasWidth,
+      height: cfg.canvasHeight,
+      rawOutputPath: request.rawOutputPath,
+    );
+  }
+
+  final canvasDimErr = _validateRgbaDimensions(cfg.canvasWidth, cfg.canvasHeight);
+  if (canvasDimErr != null) {
+    sw.stop();
+    return ExportRgbaResult(
+      statusCode: canvasDimErr,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: cfg.canvasWidth,
+      height: cfg.canvasHeight,
+      rawOutputPath: request.rawOutputPath,
+    );
+  }
+
+  for (final slot in slots) {
+    final slotDimErr = _validateRgbaDimensions(slot.width, slot.height);
+    if (slotDimErr != null) {
+      sw.stop();
+      return ExportRgbaResult(
+        statusCode: slotDimErr,
+        renderTimeMicros: sw.elapsedMicroseconds,
+        width: cfg.canvasWidth,
+        height: cfg.canvasHeight,
+        rawOutputPath: request.rawOutputPath,
+      );
+    }
+  }
+
+  final canvasByteLen = cfg.canvasWidth * cfg.canvasHeight * 4;
+  final slotPtrs = <ffi.Pointer<ffi.Uint8>>[];
+  ffi.Pointer<FsCollageInputSlot> slotsArray = ffi.nullptr;
+  ffi.Pointer<FsCollageConfig> configPtr = ffi.nullptr;
+  ffi.Pointer<FsDnaRescueParams> dnaPtr = ffi.nullptr;
+  ffi.Pointer<FsOutputUsmParams> usmPtr = ffi.nullptr;
+  ffi.Pointer<ffi.Uint8> outPtr = ffi.nullptr;
+
+  try {
+    slotsArray = calloc<FsCollageInputSlot>(slots.length);
+    for (var i = 0; i < slots.length; i++) {
+      final slot = slots[i];
+      final slotBytes = slot.width * slot.height * 4;
+      final ptr = calloc<ffi.Uint8>(slotBytes);
+      slotPtrs.add(ptr);
+      _readExactRawRgbaFileIntoNative(slot.rawInputPath, ptr, slotBytes);
+
+      final dna = slot.dnaRescue;
+      if (dna != null && dna.enabled && dna.shadowLift > 0.0) {
+        if (dnaPtr == ffi.nullptr) {
+          dnaPtr = calloc<FsDnaRescueParams>();
+        }
+        dnaPtr.ref
+          ..shadow_lift = dna.shadowLift
+          ..midtone_anchor = dna.midtoneAnchor
+          ..highlight_protect = dna.highlightProtect
+          ..mode = dna.mode
+          ..enabled = 1;
+        final dnaRc = bindings.fs_dna_rescue_apply_rgba_into(
+          ptr,
+          slotBytes,
+          slot.width,
+          slot.height,
+          dnaPtr,
+          ptr,
+          slotBytes,
+        );
+        if (dnaRc != FsStatusCode.FS_OK.value) {
+          sw.stop();
+          return ExportRgbaResult(
+            statusCode: dnaRc,
+            renderTimeMicros: sw.elapsedMicroseconds,
+            width: cfg.canvasWidth,
+            height: cfg.canvasHeight,
+            rawOutputPath: request.rawOutputPath,
+          );
+        }
+      }
+
+      slotsArray[i]
+        ..rgba = ptr
+        ..rgba_len = slotBytes
+        ..width = slot.width
+        ..height = slot.height
+        ..pan_x = slot.panX
+        ..pan_y = slot.panY
+        ..zoom = slot.zoom
+        ..reserved = 0;
+    }
+
+    configPtr = calloc<FsCollageConfig>()
+      ..ref.template_id = cfg.templateId
+      ..ref.canvas_width = cfg.canvasWidth
+      ..ref.canvas_height = cfg.canvasHeight
+      ..ref.gutter_px = cfg.gutterPx
+      ..ref.outer_margin_px = cfg.outerMarginPx
+      ..ref.bg_r = cfg.bgR
+      ..ref.bg_g = cfg.bgG
+      ..ref.bg_b = cfg.bgB
+      ..ref.bg_a = cfg.bgA;
+
+    outPtr = calloc<ffi.Uint8>(canvasByteLen);
+    final rc = bindings.fs_collage_render_rgba_into(
+      slotsArray,
+      slots.length,
+      configPtr,
+      outPtr,
+      canvasByteLen,
+    );
+
+    // Free slot buffers immediately after stitching to lower peak RAM.
+    for (final ptr in slotPtrs) {
+      if (ptr != ffi.nullptr) calloc.free(ptr);
+    }
+    slotPtrs.clear();
+    calloc.free(slotsArray);
+    slotsArray = ffi.nullptr;
+    calloc.free(configPtr);
+    configPtr = ffi.nullptr;
+
+    if (rc != FsStatusCode.FS_OK.value) {
+      sw.stop();
+      return ExportRgbaResult(
+        statusCode: rc,
+        renderTimeMicros: sw.elapsedMicroseconds,
+        width: cfg.canvasWidth,
+        height: cfg.canvasHeight,
+        rawOutputPath: request.rawOutputPath,
+      );
+    }
+
+    final usm = request.outputUsm;
+    if (usm != null && usm.enabled && usm.amount > 0.0) {
+      usmPtr = calloc<FsOutputUsmParams>()
+        ..ref.amount = usm.amount
+        ..ref.radius = usm.radius
+        ..ref.threshold = usm.threshold
+        ..ref.halo_clamp = usm.haloClamp
+        ..ref.enabled = 1;
+      final usmRc = bindings.fs_export_output_usm_rgba_into(
+        outPtr,
+        canvasByteLen,
+        cfg.canvasWidth,
+        cfg.canvasHeight,
+        usmPtr,
+        outPtr,
+        canvasByteLen,
+      );
+      if (usmRc != FsStatusCode.FS_OK.value) {
+        sw.stop();
+        return ExportRgbaResult(
+          statusCode: usmRc,
+          renderTimeMicros: sw.elapsedMicroseconds,
+          width: cfg.canvasWidth,
+          height: cfg.canvasHeight,
+          rawOutputPath: request.rawOutputPath,
+        );
+      }
+    }
+
+    _writeAtomicRawRgbaFromNative(request.rawOutputPath, outPtr, canvasByteLen);
+    sw.stop();
+    return ExportRgbaResult(
+      statusCode: FsStatusCode.FS_OK.value,
+      renderTimeMicros: sw.elapsedMicroseconds,
+      width: cfg.canvasWidth,
+      height: cfg.canvasHeight,
+      rawOutputPath: request.rawOutputPath,
+    );
+  } finally {
+    if (outPtr != ffi.nullptr) calloc.free(outPtr);
+    if (usmPtr != ffi.nullptr) calloc.free(usmPtr);
+    if (dnaPtr != ffi.nullptr) calloc.free(dnaPtr);
+    if (configPtr != ffi.nullptr) calloc.free(configPtr);
+    if (slotsArray != ffi.nullptr) calloc.free(slotsArray);
+    for (final ptr in slotPtrs) {
+      if (ptr != ffi.nullptr) calloc.free(ptr);
+    }
+  }
+}
+
 final class _StudioSurface {
   _StudioSurface({
     required this.width,
@@ -1955,6 +2610,44 @@ final class _RenderCollageRequest extends _WorkerRequest {
 
   final List<_CollageSlotTransfer> slots;
   final CollageNativeConfig config;
+}
+
+final class _RunExportPipelineRequest extends _WorkerRequest {
+  const _RunExportPipelineRequest({
+    required super.id,
+    required this.rawInputPath,
+    required this.srcWidth,
+    required this.srcHeight,
+    required this.rawOutputPath,
+    required this.dnaRescue,
+    required this.geometry,
+    required this.targetMaxLongEdge,
+    required this.outputUsm,
+  });
+
+  final String rawInputPath;
+  final int srcWidth;
+  final int srcHeight;
+  final String rawOutputPath;
+  final DnaRescueNativeParams? dnaRescue;
+  final GeometryNativeParams? geometry;
+  final int targetMaxLongEdge;
+  final OutputUsmNativeParams? outputUsm;
+}
+
+final class _RenderCollageToRawFileRequest extends _WorkerRequest {
+  const _RenderCollageToRawFileRequest({
+    required super.id,
+    required this.slots,
+    required this.config,
+    required this.outputUsm,
+    required this.rawOutputPath,
+  });
+
+  final List<CollageRawFileSlot> slots;
+  final CollageNativeConfig config;
+  final OutputUsmNativeParams? outputUsm;
+  final String rawOutputPath;
 }
 
 final class _ShutdownRequest {

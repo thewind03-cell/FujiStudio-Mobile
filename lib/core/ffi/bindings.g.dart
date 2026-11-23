@@ -165,6 +165,112 @@ class FujiStudioBindings {
         )
       >();
 
+  /// Resizes an RGBA8888 buffer using a separable 2-pass weight-normalized
+  /// Lanczos3 (a = 3) filter into caller-allocated `out_rgba`.
+  /// Rejects in-place or overlapping buffers with FS_ERR_INVALID_PARAMS.
+  /// When `out_width == src_width && out_height == src_height`, copies bit-exactly.
+  int fs_export_lanczos3_resize_rgba_into(
+    ffi.Pointer<ffi.Uint8> input_rgba,
+    int input_len,
+    int src_width,
+    int src_height,
+    ffi.Pointer<ffi.Uint8> out_rgba,
+    int out_len,
+    int out_width,
+    int out_height,
+  ) {
+    return _fs_export_lanczos3_resize_rgba_into(
+      input_rgba,
+      input_len,
+      src_width,
+      src_height,
+      out_rgba,
+      out_len,
+      out_width,
+      out_height,
+    );
+  }
+
+  late final _fs_export_lanczos3_resize_rgba_intoPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+          )
+        >
+      >('fs_export_lanczos3_resize_rgba_into');
+  late final _fs_export_lanczos3_resize_rgba_into =
+      _fs_export_lanczos3_resize_rgba_intoPtr
+          .asFunction<
+            int Function(
+              ffi.Pointer<ffi.Uint8>,
+              int,
+              int,
+              int,
+              ffi.Pointer<ffi.Uint8>,
+              int,
+              int,
+              int,
+            )
+          >();
+
+  /// Applies luma-only Output Sharpening (USM) into caller-allocated `out_rgba`.
+  /// Safely supports both in-place (`out_rgba == input_rgba`) and separate buffers.
+  int fs_export_output_usm_rgba_into(
+    ffi.Pointer<ffi.Uint8> input_rgba,
+    int input_len,
+    int width,
+    int height,
+    ffi.Pointer<FsOutputUsmParams> params,
+    ffi.Pointer<ffi.Uint8> out_rgba,
+    int out_len,
+  ) {
+    return _fs_export_output_usm_rgba_into(
+      input_rgba,
+      input_len,
+      width,
+      height,
+      params,
+      out_rgba,
+      out_len,
+    );
+  }
+
+  late final _fs_export_output_usm_rgba_intoPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<FsOutputUsmParams>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Size,
+          )
+        >
+      >('fs_export_output_usm_rgba_into');
+  late final _fs_export_output_usm_rgba_into =
+      _fs_export_output_usm_rgba_intoPtr
+          .asFunction<
+            int Function(
+              ffi.Pointer<ffi.Uint8>,
+              int,
+              int,
+              int,
+              ffi.Pointer<FsOutputUsmParams>,
+              ffi.Pointer<ffi.Uint8>,
+              int,
+            )
+          >();
+
   /// Releases a buffer previously allocated by the FujiStudio C++ core.
   /// Passing NULL is a safe no-op.
   void fs_free_buffer(ffi.Pointer<ffi.Uint8> ptr) {
@@ -851,6 +957,44 @@ final class FsNormCropBox extends ffi.Struct {
     ..ref.top = top
     ..ref.right = right
     ..ref.bottom = bottom;
+}
+
+/// Output Unsharp Mask configuration on luminance channel (20 bytes, explicit
+/// 4-byte alignment).
+final class FsOutputUsmParams extends ffi.Struct {
+  /// < [0.0, 1.5], e.g. 0.0 (off), 0.35 (subtle), 0.60 (standard)
+  @ffi.Float()
+  external double amount;
+
+  /// < [0.5, 2.0] px, default 0.85
+  @ffi.Float()
+  external double radius;
+
+  /// < [0.0, 20.0] on 0..255 luma scale, default 3.0
+  @ffi.Float()
+  external double threshold;
+
+  /// < [0.0, 40.0] max amplitude on 0..255 scale, default 18.0
+  @ffi.Float()
+  external double halo_clamp;
+
+  /// < 0 => bit-exact bypass
+  @ffi.Int32()
+  external int enabled;
+
+  static ffi.Pointer<FsOutputUsmParams> $allocate(
+    ffi.Allocator $allocator, {
+    required double amount,
+    required double radius,
+    required double threshold,
+    required double halo_clamp,
+    required int enabled,
+  }) => $allocator<FsOutputUsmParams>()
+    ..ref.amount = amount
+    ..ref.radius = radius
+    ..ref.threshold = threshold
+    ..ref.halo_clamp = halo_clamp
+    ..ref.enabled = enabled;
 }
 
 /// Explicit 56-byte POD layout for Dart ffigen compatibility.

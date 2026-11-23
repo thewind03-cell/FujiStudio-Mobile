@@ -149,6 +149,81 @@ final class AndroidStorageGateway implements StorageGateway {
     return dir;
   }
 
+  @override
+  Future<String> getExportTempDirectory() async {
+    final dir = await _channel.invokeMethod<String>('getExportTempDirectory');
+    if (dir == null || dir.isEmpty) {
+      throw StateError('getExportTempDirectory returned empty path');
+    }
+    return dir;
+  }
+
+  @override
+  Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
+    required String source,
+    required bool isContentUri,
+    required String outRawPath,
+    required int maxDecodeLongEdge,
+    int? orientationOverride,
+  }) async {
+    final raw = await _channel.invokeMapMethod<Object?, Object?>(
+      'decodeSourceForExportToRawFile',
+      <String, Object?>{
+        'source': source,
+        'isContentUri': isContentUri,
+        'outRawPath': outRawPath,
+        'maxDecodeLongEdge': maxDecodeLongEdge,
+        'orientationOverride': ?orientationOverride,
+      },
+    );
+    if (raw == null) {
+      throw StateError('decodeSourceForExportToRawFile returned null for $source');
+    }
+    return DecodedExportRawResult(
+      width: (raw['width'] as num?)?.toInt() ?? 0,
+      height: (raw['height'] as num?)?.toInt() ?? 0,
+      rawPath: (raw['rawPath'] as String?) ?? outRawPath,
+    );
+  }
+
+  @override
+  Future<SavedExportResult> encodeRgbaFileAndSaveExport({
+    required String rawRgbaPath,
+    required int width,
+    required int height,
+    required int jpegQuality,
+    required String displayName,
+    String? exifSource,
+    bool exifSourceIsContentUri = true,
+    required bool preserveExif,
+    required bool stripGps,
+  }) async {
+    final raw = await _channel.invokeMapMethod<Object?, Object?>(
+      'encodeRgbaFileAndSaveExport',
+      <String, Object?>{
+        'rawRgbaPath': rawRgbaPath,
+        'width': width,
+        'height': height,
+        'jpegQuality': jpegQuality,
+        'displayName': displayName,
+        'exifSource': ?exifSource,
+        'exifSourceIsContentUri': exifSourceIsContentUri,
+        'preserveExif': preserveExif,
+        'stripGps': stripGps,
+      },
+    );
+    if (raw == null) {
+      throw StateError('encodeRgbaFileAndSaveExport returned null for $displayName');
+    }
+    return SavedExportResult(
+      contentUri: (raw['contentUri'] as String?) ?? '',
+      displayName: (raw['displayName'] as String?) ?? displayName,
+      byteSize: (raw['byteSize'] as num?)?.toInt() ?? 0,
+      width: (raw['width'] as num?)?.toInt() ?? width,
+      height: (raw['height'] as num?)?.toInt() ?? height,
+    );
+  }
+
   static StoragePermissionState _parsePermissionState(String? raw) {
     return switch (raw) {
       'granted' => StoragePermissionState.granted,

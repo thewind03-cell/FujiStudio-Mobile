@@ -3,6 +3,7 @@ package org.fujistudio.mobile
 import android.Manifest
 import android.app.Activity
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -10,6 +11,7 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
@@ -17,8 +19,11 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -170,6 +175,57 @@ class StorageGatewayChannel(
                             dir.mkdirs()
                         }
                         dir.absolutePath
+                    }
+                }
+            }
+            "getExportTempDirectory" -> {
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        ensureExportTempDir().absolutePath
+                    }
+                }
+            }
+            "decodeSourceForExportToRawFile" -> {
+                val source = call.argument<String>("source") ?: ""
+                val isContentUri = call.argument<Boolean>("isContentUri") ?: false
+                val outRawPath = call.argument<String>("outRawPath") ?: ""
+                val maxDecodeLongEdge = call.argument<Int>("maxDecodeLongEdge") ?: 0
+                val orientationOverride = call.argument<Int>("orientationOverride")
+                decodeExecutor.execute {
+                    runOnResult(result) {
+                        decodeSourceForExportToRawFile(
+                            source = source,
+                            isContentUri = isContentUri,
+                            outRawPath = outRawPath,
+                            maxDecodeLongEdge = maxDecodeLongEdge,
+                            orientationOverride = orientationOverride,
+                        )
+                    }
+                }
+            }
+            "encodeRgbaFileAndSaveExport" -> {
+                val rawRgbaPath = call.argument<String>("rawRgbaPath") ?: ""
+                val width = call.argument<Int>("width") ?: 0
+                val height = call.argument<Int>("height") ?: 0
+                val jpegQuality = call.argument<Int>("jpegQuality") ?: 92
+                val displayName = call.argument<String>("displayName") ?: ""
+                val exifSource = call.argument<String>("exifSource")
+                val exifSourceIsContentUri = call.argument<Boolean>("exifSourceIsContentUri") ?: true
+                val preserveExif = call.argument<Boolean>("preserveExif") ?: true
+                val stripGps = call.argument<Boolean>("stripGps") ?: true
+                ioExecutor.execute {
+                    runOnResult(result) {
+                        encodeRgbaFileAndSaveExport(
+                            rawRgbaPath = rawRgbaPath,
+                            width = width,
+                            height = height,
+                            jpegQuality = jpegQuality,
+                            displayName = displayName,
+                            exifSource = exifSource,
+                            exifSourceIsContentUri = exifSourceIsContentUri,
+                            preserveExif = preserveExif,
+                            stripGps = stripGps,
+                        )
                     }
                 }
             }
@@ -642,5 +698,376 @@ class StorageGatewayChannel(
             return src
         }
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+    }
+
+    private fun ensureExportTempDir(): File {
+        val dir = File(activity.cacheDir, "export_tmp")
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+        return dir
+    }
+
+    private fun transformBitmapOrientationOnly(src: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            else -> Unit
+        }
+        if (matrix.isIdentity) {
+            return src
+        }
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+    }
+
+    private fun decodeSourceForExportToRawFile(
+        source: String,
+        isContentUri: Boolean,
+        outRawPath: String,
+        maxDecodeLongEdge: Int,
+        orientationOverride: Int?,
+    ): Map<String, Any> {
+        require(source.isNotBlank()) { "decodeSourceForExportToRawFile source cannot be blank" }
+        require(outRawPath.isNotBlank()) { "decodeSourceForExportToRawFile outRawPath cannot be blank" }
+
+        val boundsOpts = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        decodeBitmapStreamOrFile(source, isContentUri, boundsOpts)
+        val rawW = boundsOpts.outWidth
+        val rawH = boundsOpts.outHeight
+        require(rawW > 0 && rawH > 0) { "Failed to decode image bounds for $source" }
+
+        var inSampleSize = 1
+        if (maxDecodeLongEdge > 0) {
+            val rawLongEdge = max(rawW, rawH)
+            while ((rawLongEdge / (inSampleSize * 2)) >= maxDecodeLongEdge) {
+                inSampleSize *= 2
+            }
+        }
+
+        val decodeOpts = BitmapFactory.Options().apply {
+            this.inSampleSize = inSampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = decodeBitmapStreamOrFile(source, isContentUri, decodeOpts)
+            ?: throw IllegalStateException("BitmapFactory failed to decode $source")
+
+        var oriented: Bitmap? = null
+        var rgbaBitmap: Bitmap? = null
+        val outFile = File(outRawPath)
+        outFile.parentFile?.mkdirs()
+        val reqId = tempCounter.incrementAndGet()
+        val tmpFile = File("${outFile.absolutePath}.tmp.$reqId")
+
+        try {
+            val orientation = orientationOverride ?: readExifOrientation(source, isContentUri)
+            oriented = transformBitmapOrientationOnly(decoded, orientation)
+            if (oriented !== decoded) {
+                decoded.recycle()
+            }
+
+            rgbaBitmap = if (oriented.config == Bitmap.Config.ARGB_8888) {
+                oriented
+            } else {
+                val converted = oriented.copy(Bitmap.Config.ARGB_8888, false)
+                    ?: throw IllegalStateException("Failed to convert bitmap to ARGB_8888")
+                oriented.recycle()
+                converted
+            }
+
+            val finalW = rgbaBitmap.width
+            val finalH = rgbaBitmap.height
+            val totalBytesLong = finalW.toLong() * finalH.toLong() * 4L
+            require(totalBytesLong > 0L && totalBytesLong <= Int.MAX_VALUE.toLong()) {
+                "Decoded raw RGBA buffer size overflow: ${finalW}x$finalH"
+            }
+
+            val pixelBuffer = ByteBuffer.allocateDirect(totalBytesLong.toInt())
+            rgbaBitmap.copyPixelsToBuffer(pixelBuffer)
+            pixelBuffer.rewind()
+
+            FileOutputStream(tmpFile).use { fos ->
+                val ch = fos.channel
+                while (pixelBuffer.hasRemaining()) {
+                    ch.write(pixelBuffer)
+                }
+                fos.flush()
+                runCatching { fos.fd.sync() }
+            }
+
+            if (!tmpFile.renameTo(outFile)) {
+                if (outFile.exists()) {
+                    outFile.delete()
+                }
+                if (!tmpFile.renameTo(outFile)) {
+                    throw IllegalStateException("Failed atomic rename to ${outFile.absolutePath}")
+                }
+            }
+
+            return mapOf(
+                "width" to finalW,
+                "height" to finalH,
+                "rawPath" to outFile.absolutePath,
+            )
+        } catch (t: Throwable) {
+            tmpFile.delete()
+            throw t
+        } finally {
+            rgbaBitmap?.let { if (!it.isRecycled) it.recycle() }
+            oriented?.let { if (!it.isRecycled) it.recycle() }
+            if (!decoded.isRecycled) decoded.recycle()
+        }
+    }
+
+    private fun encodeRgbaFileAndSaveExport(
+        rawRgbaPath: String,
+        width: Int,
+        height: Int,
+        jpegQuality: Int,
+        displayName: String,
+        exifSource: String?,
+        exifSourceIsContentUri: Boolean,
+        preserveExif: Boolean,
+        stripGps: Boolean,
+    ): Map<String, Any> {
+        require(rawRgbaPath.isNotBlank()) { "rawRgbaPath cannot be blank" }
+        require(displayName.isNotBlank()) { "displayName cannot be blank" }
+        require(width > 0 && height > 0) { "Invalid dimensions: ${width}x$height" }
+
+        val expectedBytesLong = width.toLong() * height.toLong() * 4L
+        require(expectedBytesLong <= Int.MAX_VALUE.toLong()) {
+            "RGBA byte length overflow for ${width}x$height"
+        }
+        val expectedBytes = expectedBytesLong.toInt()
+        val rawFile = File(rawRgbaPath)
+        require(rawFile.exists() && rawFile.length() >= expectedBytesLong) {
+            "Missing or truncated raw RGBA file: $rawRgbaPath"
+        }
+
+        val pixelBuffer = ByteBuffer.allocateDirect(expectedBytes)
+        FileInputStream(rawFile).use { fis ->
+            val ch = fis.channel
+            while (pixelBuffer.hasRemaining()) {
+                val read = ch.read(pixelBuffer)
+                if (read < 0) {
+                    throw IllegalStateException("Unexpected EOF reading $rawRgbaPath")
+                }
+            }
+        }
+        pixelBuffer.rewind()
+
+        val exportTmpDir = ensureExportTempDir()
+        val tempJpegFile = File(exportTmpDir, "enc_${UUID.randomUUID()}.jpg")
+        val quality = jpegQuality.coerceIn(50, 100)
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
+            bitmap.copyPixelsFromBuffer(pixelBuffer)
+            FileOutputStream(tempJpegFile).use { fos ->
+                val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, quality, fos)
+                if (!ok) {
+                    throw IllegalStateException("Bitmap.compress(JPEG) returned false")
+                }
+                fos.flush()
+                runCatching { fos.fd.sync() }
+            }
+        } finally {
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+
+        try {
+            applySafeExifAttributes(
+                tempJpegFile = tempJpegFile,
+                width = width,
+                height = height,
+                exifSource = exifSource,
+                exifSourceIsContentUri = exifSourceIsContentUri,
+                preserveExif = preserveExif,
+                stripGps = stripGps,
+            )
+
+            val byteSize = tempJpegFile.length()
+            val resolver = activity.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(
+                        MediaStore.MediaColumns.RELATIVE_PATH,
+                        "${Environment.DIRECTORY_PICTURES}/FujiStudio",
+                    )
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+            }
+
+            val insertedUri = resolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values,
+            ) ?: throw IllegalStateException("MediaStore.insert returned null for $displayName")
+
+            try {
+                resolver.openOutputStream(insertedUri)?.use { out ->
+                    tempJpegFile.inputStream().use { input ->
+                        input.copyTo(out)
+                    }
+                    out.flush()
+                } ?: throw IllegalStateException("openOutputStream returned null for $insertedUri")
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val publishValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }
+                    resolver.update(insertedUri, publishValues, null, null)
+                }
+            } catch (t: Throwable) {
+                runCatching { resolver.delete(insertedUri, null, null) }
+                throw t
+            }
+
+            return mapOf(
+                "contentUri" to insertedUri.toString(),
+                "displayName" to displayName,
+                "byteSize" to byteSize,
+                "width" to width,
+                "height" to height,
+            )
+        } finally {
+            tempJpegFile.delete()
+        }
+    }
+
+    private fun applySafeExifAttributes(
+        tempJpegFile: File,
+        width: Int,
+        height: Int,
+        exifSource: String?,
+        exifSourceIsContentUri: Boolean,
+        preserveExif: Boolean,
+        stripGps: Boolean,
+    ) {
+        val dstExif = ExifInterface(tempJpegFile.absolutePath)
+
+        val photoWhitelistTags = listOf(
+            ExifInterface.TAG_MAKE,
+            ExifInterface.TAG_MODEL,
+            "LensMake",
+            "LensModel",
+            ExifInterface.TAG_DATETIME,
+            "DateTimeOriginal",
+            "DateTimeDigitized",
+            "OffsetTime",
+            "OffsetTimeOriginal",
+            "OffsetTimeDigitized",
+            "ExposureTime",
+            "FNumber",
+            "PhotographicSensitivity",
+            "ISOSpeedRatings",
+            ExifInterface.TAG_FOCAL_LENGTH,
+            "FocalLengthIn35mmFilm",
+            ExifInterface.TAG_WHITE_BALANCE,
+            "ExposureBiasValue",
+            "MeteringMode",
+            ExifInterface.TAG_FLASH,
+            "ExposureProgram",
+            "Software",
+        )
+
+        val gpsTags = listOf(
+            ExifInterface.TAG_GPS_LATITUDE,
+            ExifInterface.TAG_GPS_LATITUDE_REF,
+            ExifInterface.TAG_GPS_LONGITUDE,
+            ExifInterface.TAG_GPS_LONGITUDE_REF,
+            ExifInterface.TAG_GPS_ALTITUDE,
+            ExifInterface.TAG_GPS_ALTITUDE_REF,
+            ExifInterface.TAG_GPS_TIMESTAMP,
+            ExifInterface.TAG_GPS_DATESTAMP,
+            ExifInterface.TAG_GPS_PROCESSING_METHOD,
+            "GPSSpeed",
+            "GPSSpeedRef",
+            "GPSTrack",
+            "GPSTrackRef",
+            "GPSImgDirection",
+            "GPSImgDirectionRef",
+            "GPSMapDatum",
+            "GPSAreaInformation",
+            "GPSDestBearing",
+            "GPSDestBearingRef",
+            "GPSDestDistance",
+            "GPSDestDistanceRef",
+            "GPSDestLatitude",
+            "GPSDestLatitudeRef",
+            "GPSDestLongitude",
+            "GPSDestLongitudeRef",
+            "GPSDifferential",
+            "GPSHPositioningError",
+            "GPSSatellites",
+            "GPSStatus",
+            "GPSMeasureMode",
+            "GPSDOP",
+            "GPSVersionID",
+        )
+
+        if (preserveExif && !exifSource.isNullOrBlank()) {
+            val srcExif = runCatching {
+                if (exifSourceIsContentUri) {
+                    activity.contentResolver.openInputStream(Uri.parse(exifSource))?.use { stream ->
+                        ExifInterface(stream)
+                    }
+                } else {
+                    ExifInterface(exifSource)
+                }
+            }.getOrNull()
+
+            if (srcExif != null) {
+                for (tag in photoWhitelistTags) {
+                    val value = srcExif.getAttribute(tag)
+                    if (value != null) {
+                        dstExif.setAttribute(tag, value)
+                    }
+                }
+                if (!stripGps) {
+                    for (gpsTag in gpsTags) {
+                        val value = srcExif.getAttribute(gpsTag)
+                        if (value != null) {
+                            dstExif.setAttribute(gpsTag, value)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (stripGps) {
+            for (gpsTag in gpsTags) {
+                dstExif.setAttribute(gpsTag, null)
+            }
+        }
+
+        // Prevent double-rotation and keep sRGB + exact output pixel dimensions.
+        dstExif.setAttribute(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL.toString(),
+        )
+        dstExif.setAttribute(ExifInterface.TAG_COLOR_SPACE, "1")
+        dstExif.setAttribute(ExifInterface.TAG_IMAGE_WIDTH, width.toString())
+        dstExif.setAttribute(ExifInterface.TAG_IMAGE_LENGTH, height.toString())
+        dstExif.setAttribute("PixelXDimension", width.toString())
+        dstExif.setAttribute("PixelYDimension", height.toString())
+
+        dstExif.saveAttributes()
     }
 }
