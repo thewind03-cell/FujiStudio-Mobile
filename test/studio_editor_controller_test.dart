@@ -171,6 +171,37 @@ final class _DummyStorageGateway implements StorageGateway {
   @override
   Future<StoragePermissionState> requestReadPermission() async =>
       StoragePermissionState.granted;
+
+  @override
+  Future<String> getExportTempDirectory() async => '$proxyDir/export_tmp';
+
+  @override
+  Future<DecodedExportRawResult> decodeSourceForExportToRawFile({
+    required String source,
+    required bool isContentUri,
+    required String outRawPath,
+    required int maxDecodeLongEdge,
+    int? orientationOverride,
+  }) async => DecodedExportRawResult(width: 1, height: 1, rawPath: outRawPath);
+
+  @override
+  Future<SavedExportResult> encodeRgbaFileAndSaveExport({
+    required String rawRgbaPath,
+    required int width,
+    required int height,
+    required int jpegQuality,
+    required String displayName,
+    String? exifSource,
+    bool exifSourceIsContentUri = true,
+    required bool preserveExif,
+    required bool stripGps,
+  }) async => SavedExportResult(
+    contentUri: 'content://media/external/images/media/999',
+    displayName: displayName,
+    byteSize: 128,
+    width: width,
+    height: height,
+  );
 }
 
 Future<StudioDecodedFrame> _fakeFrameLoader(PairedAsset asset) async {

@@ -21,6 +21,7 @@ if(FUJISTUDIO_BUILD_SHARED)
     src/dna_rescue_engine.cpp
     src/geometry_crop_engine.cpp
     src/collage_stitcher.cpp
+    src/social_exporter.cpp
   )
   target_compile_definitions(fujistudio_core
     PRIVATE
@@ -33,6 +34,7 @@ else()
     src/dna_rescue_engine.cpp
     src/geometry_crop_engine.cpp
     src/collage_stitcher.cpp
+    src/social_exporter.cpp
   )
   target_compile_definitions(fujistudio_core
     PUBLIC
@@ -188,5 +190,22 @@ else()
     endif()
 
     add_test(NAME geometry_collage_property_test COMMAND geometry_collage_property_test)
+
+    add_executable(social_exporter_property_test tests/social_exporter_property_test.cpp)
+    target_link_libraries(social_exporter_property_test PRIVATE fujistudio_core)
+    set_target_properties(social_exporter_property_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    if(MSVC)
+      target_compile_options(social_exporter_property_test PRIVATE /W4 /permissive-)
+    else()
+      target_compile_options(social_exporter_property_test PRIVATE -Wall -Wextra -Wpedantic)
+      if(_FS_SANITIZER_FLAGS)
+        target_compile_options(social_exporter_property_test PRIVATE ${_FS_SANITIZER_FLAGS})
+        target_link_options(social_exporter_property_test PRIVATE -fsanitize=address,undefined)
+      endif()
+    endif()
+
+    add_test(NAME social_exporter_property_test COMMAND social_exporter_property_test)
   endif()
 endif()

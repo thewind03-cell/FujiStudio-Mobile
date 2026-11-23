@@ -316,6 +316,47 @@ FS_API int32_t fs_collage_render_rgba_into(
     uint8_t* out_canvas_rgba,
     size_t out_canvas_len);
 
+/**
+ * Output Unsharp Mask configuration on luminance channel (20 bytes, explicit
+ * 4-byte alignment).
+ */
+typedef struct FsOutputUsmParams {
+  float   amount;      /**< [0.0, 1.5], e.g. 0.0 (off), 0.35 (subtle), 0.60 (standard) */
+  float   radius;      /**< [0.5, 2.0] px, default 0.85 */
+  float   threshold;   /**< [0.0, 20.0] on 0..255 luma scale, default 3.0 */
+  float   halo_clamp;  /**< [0.0, 40.0] max amplitude on 0..255 scale, default 18.0 */
+  int32_t enabled;     /**< 0 => bit-exact bypass */
+} FsOutputUsmParams;
+
+/**
+ * Resizes an RGBA8888 buffer using a separable 2-pass weight-normalized
+ * Lanczos3 (a = 3) filter into caller-allocated `out_rgba`.
+ * Rejects in-place or overlapping buffers with FS_ERR_INVALID_PARAMS.
+ * When `out_width == src_width && out_height == src_height`, copies bit-exactly.
+ */
+FS_API int32_t fs_export_lanczos3_resize_rgba_into(
+    const uint8_t* input_rgba,
+    size_t input_len,
+    int32_t src_width,
+    int32_t src_height,
+    uint8_t* out_rgba,
+    size_t out_len,
+    int32_t out_width,
+    int32_t out_height);
+
+/**
+ * Applies luma-only Output Sharpening (USM) into caller-allocated `out_rgba`.
+ * Safely supports both in-place (`out_rgba == input_rgba`) and separate buffers.
+ */
+FS_API int32_t fs_export_output_usm_rgba_into(
+    const uint8_t* input_rgba,
+    size_t input_len,
+    int32_t width,
+    int32_t height,
+    const FsOutputUsmParams* params,
+    uint8_t* out_rgba,
+    size_t out_len);
+
 #ifdef __cplusplus
 }
 #endif

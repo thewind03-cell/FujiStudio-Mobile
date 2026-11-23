@@ -10,6 +10,7 @@ import '../../core/schema/collage_spec.dart';
 import '../../core/schema/session_item.dart';
 import '../../core/theme/fuji_theme.dart';
 import '../session_picker/session_controller.dart';
+import '../social_export/export_mapper.dart';
 import 'collage_mapper.dart';
 import 'story_collage_controller.dart';
 
@@ -182,6 +183,7 @@ class _StoryCollageScreenState extends ConsumerState<StoryCollageScreen> {
   late final StoryCollageController _controller;
   bool _allowPop = false;
   bool _isPopping = false;
+  bool _isExporting = false;
 
   @override
   void initState() {
@@ -210,7 +212,7 @@ class _StoryCollageScreenState extends ConsumerState<StoryCollageScreen> {
   }
 
   Future<void> _handleBack() async {
-    if (_isPopping) return;
+    if (_isPopping || _isExporting) return;
     _isPopping = true;
     try {
       if (_controller.state.hasUnsavedChanges) {
@@ -341,6 +343,46 @@ class _StoryCollageScreenState extends ConsumerState<StoryCollageScreen> {
     );
     if (picked != null && mounted) {
       await _controller.replaceSelectedItems(picked);
+    }
+  }
+
+  Future<void> _exportCollage() async {
+    if (_isExporting) return;
+    unawaited(HapticFeedback.mediumImpact());
+    setState(() {
+      _isExporting = true;
+    });
+    try {
+      final result = await ref.read(socialExportServiceProvider).exportCollage(
+            spec: _controller.state.spec,
+            sharpening: OutputSharpeningLevel.subtle,
+            maxLongEdgePx: 2048,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Đã xuất Collage: ${result.formatSummary()}'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Lỗi xuất Collage: $error'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
     }
   }
 
@@ -523,18 +565,11 @@ class _StoryCollageScreenState extends ConsumerState<StoryCollageScreen> {
           const SizedBox(width: 6),
           _CompactActionButton(
             key: const Key('collage_export_button'),
-            label: 'XUẤT 2048',
-            active: false,
-            onPressed: () {
-              ScaffoldMessenger.of(context)
-                ..hideCurrentSnackBar()
-                ..showSnackBar(
-                  const SnackBar(
-                    content: Text('Sẵn sàng ở Lát cắt 4'),
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-            },
+            label: _isExporting ? 'ĐANG XUẤT...' : 'XUẤT 2048',
+            active: _isExporting,
+            onPressed: (_isExporting || state.isLoading || state.isRenderingCpp)
+                ? null
+                : () => unawaited(_exportCollage()),
           ),
         ],
       ),

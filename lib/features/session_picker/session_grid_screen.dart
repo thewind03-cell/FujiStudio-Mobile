@@ -10,6 +10,8 @@ import '../../core/schema/session_item.dart';
 import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/storage/proxy_cache_manager.dart';
 import '../../core/theme/fuji_theme.dart';
+import '../social_export/batch_export_controller.dart';
+import '../social_export/batch_export_sheet.dart';
 import '../story_collage/story_collage_screen.dart';
 import '../studio_editor/dna_rescue_mapper.dart';
 import '../studio_editor/geometry_mapper.dart';
@@ -29,6 +31,22 @@ class SessionGridScreen extends ConsumerStatefulWidget {
 class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
   int _columnCount = 3;
   bool _isPopping = false;
+  bool _isOpeningSheet = false;
+  String? _loadedLogAlbumKey;
+
+  void _ensureExportLogLoaded(String? albumKey) {
+    if (albumKey == null ||
+        albumKey.isEmpty ||
+        albumKey == _loadedLogAlbumKey) {
+      return;
+    }
+    _loadedLogAlbumKey = albumKey;
+    unawaited(
+      ref.read(mobileExportLogStoreProvider).ensureLoaded(albumKey).catchError(
+            (_) => const <String>{},
+          ),
+    );
+  }
 
   Future<void> _handleBack() async {
     if (_isPopping) return;
@@ -50,6 +68,11 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(sessionControllerProvider);
     final controller = ref.read(sessionControllerProvider.notifier);
+    final exportLogStore = ref.watch(mobileExportLogStoreProvider);
+    _ensureExportLogLoaded(state.albumKey);
+    final exportedIds = state.albumKey == null
+        ? const <String>{}
+        : exportLogStore.exportedIdsForAlbum(state.albumKey!);
 
     return PopScope(
       canPop: false,
@@ -78,6 +101,7 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
                 state: state,
                 onSelect: controller.setFilter,
                 onOpenCollage: () => unawaited(_openCollage(state)),
+                onOpenBatchExport: () => unawaited(_openBatchExport(state)),
               ),
               if (state.missingFromGalleryCount > 0)
                 Container(
@@ -101,7 +125,7 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
                   ),
                 ),
               Expanded(
-                child: _buildGridContent(state, controller),
+                child: _buildGridContent(state, controller, exportedIds),
               ),
             ],
           ),
@@ -111,35 +135,87 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
   }
 
   Future<void> _openCollage(SessionState state) async {
-    if (state.totalCount < 2) return;
-    final keepIds = <String>[];
+    if (_isOpeningSheet || _isPopping || state.totalCount < 2) return;
+    _isOpeningSheet = true;
+    try {
+      final keepIds = <String>[];
+      for (final id in state.galleryOrderedItemIds) {
+        final item = state.itemById(id);
+        if (item?.cullResult?.status == 'keep') {
+          keepIds.add(id);
+        }
+      }
+
+      List<String>? targetIds;
+      if (keepIds.length >= 2 && keepIds.length <= 4) {
+        targetIds = keepIds;
+      } else {
+        targetIds = await showCollageImagePickerSheet(
+          context: context,
+          sessionState: state,
+          initialSelectedIds: keepIds.take(4).toList(),
+        );
+      }
+
+      if (!mounted || targetIds == null || targetIds.length < 2) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => StoryCollageScreen(initialItemIds: targetIds!),
+        ),
+      );
+    } finally {
+      _isOpeningSheet = false;
+    }
+  }
+
+  Future<void> _openBatchExport(SessionState state) async {
+    if (_isOpeningSheet || _isPopping) return;
+    final targets = <BatchExportTarget>[];
     for (final id in state.galleryOrderedItemIds) {
       final item = state.itemById(id);
-      if (item?.cullResult?.status == 'keep') {
-        keepIds.add(id);
+      final pair = state.pairedAssetsById[id];
+      if (item != null && pair != null && item.cullResult?.status == 'keep') {
+        targets.add(
+          BatchExportTarget(
+            itemId: id,
+            pairedAsset: pair,
+            recipe: item.editRecipe,
+          ),
+        );
       }
     }
 
-    List<String>? targetIds;
-    if (keepIds.length >= 2 && keepIds.length <= 4) {
-      targetIds = keepIds;
-    } else {
-      targetIds = await showCollageImagePickerSheet(
-        context: context,
-        sessionState: state,
-        initialSelectedIds: keepIds.take(4).toList(),
-      );
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Nhấn giữ ảnh để chọn KEEP trước khi xuất hàng loạt.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      return;
     }
 
-    if (!mounted || targetIds == null || targetIds.length < 2) return;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => StoryCollageScreen(initialItemIds: targetIds!),
-      ),
-    );
+    _isOpeningSheet = true;
+    try {
+      await ref.read(sessionControllerProvider.notifier).flushPendingSave();
+      if (!mounted) return;
+      await showBatchExportSheet(
+        context: context,
+        targets: targets,
+        albumKey: state.albumKey,
+      );
+    } finally {
+      _isOpeningSheet = false;
+    }
   }
 
-  Widget _buildGridContent(SessionState state, SessionController controller) {
+  Widget _buildGridContent(
+    SessionState state,
+    SessionController controller,
+    Set<String> exportedIds,
+  ) {
     if (state.isLoading) {
       return const Center(
         child: CircularProgressIndicator(color: FujiColors.accent),
@@ -189,6 +265,7 @@ class _SessionGridScreenState extends ConsumerState<SessionGridScreen> {
           key: ValueKey<String>(itemId),
           item: item,
           pairedAsset: paired,
+          isExported: exportedIds.contains(itemId),
           onTap: () {
             Navigator.of(context).push<void>(
               MaterialPageRoute<void>(
@@ -313,15 +390,19 @@ class _FilterChipStrip extends StatelessWidget {
     required this.state,
     required this.onSelect,
     required this.onOpenCollage,
+    required this.onOpenBatchExport,
   });
 
   final SessionState state;
   final void Function(GridFilterMode mode) onSelect;
   final VoidCallback onOpenCollage;
+  final VoidCallback onOpenBatchExport;
 
   @override
   Widget build(BuildContext context) {
     final canCollage = state.totalCount >= 2;
+    final keepCount = state.keepCount;
+    final hasKeep = keepCount > 0;
     return Container(
       height: 44,
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -353,7 +434,7 @@ class _FilterChipStrip extends StatelessWidget {
             onTap: canCollage ? onOpenCollage : null,
             borderRadius: BorderRadius.circular(4),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: BoxDecoration(
                 color: canCollage
                     ? FujiColors.accent.withValues(alpha: 0.16)
@@ -373,6 +454,35 @@ class _FilterChipStrip extends StatelessWidget {
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.4,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          InkWell(
+            key: const Key('grid_batch_export_button'),
+            onTap: onOpenBatchExport,
+            borderRadius: BorderRadius.circular(4),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: hasKeep
+                    ? FujiColors.keep.withValues(alpha: 0.16)
+                    : FujiColors.surface,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: hasKeep ? FujiColors.keep : FujiColors.border,
+                  width: 1,
+                ),
+              ),
+              child: Text(
+                hasKeep ? '↑ XUẤT ($keepCount)' : '↑ XUẤT',
+                style: TextStyle(
+                  color: hasKeep ? FujiColors.keep : FujiColors.textSecondary,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  fontFeatures: FujiTheme.tabularFeatures,
                 ),
               ),
             ),
@@ -421,12 +531,14 @@ class PhotoGridTile extends ConsumerStatefulWidget {
     super.key,
     required this.item,
     required this.pairedAsset,
+    this.isExported = false,
     required this.onTap,
     required this.onLongPress,
   });
 
   final SessionItem item;
   final PairedAsset pairedAsset;
+  final bool isExported;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
@@ -584,6 +696,32 @@ class _PhotoGridTileState extends ConsumerState<PhotoGridTile> {
                     border: Border.all(
                       color: FujiColors.canvas,
                       width: 1,
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.isExported)
+              Positioned(
+                right: 4,
+                bottom: 6,
+                child: Container(
+                  key: Key('exp_badge_${widget.item.id}'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xCC0E0F11),
+                    borderRadius: BorderRadius.circular(2),
+                    border: Border.all(color: FujiColors.keep, width: 0.8),
+                  ),
+                  child: const Text(
+                    'EXP',
+                    style: TextStyle(
+                      color: FujiColors.keep,
+                      fontSize: 8.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.4,
                     ),
                   ),
                 ),

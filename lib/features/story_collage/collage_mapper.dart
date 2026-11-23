@@ -156,6 +156,23 @@ abstract final class CollageMapper {
     return (baseWidth, h);
   }
 
+  /// Computes full-resolution Story Collage canvas dimensions constrained by
+  /// [maxLongEdgePx] (default `2048`: `1152x2048` for `9:16`, `1638x2048` for
+  /// `4:5`).
+  static (int width, int height) exportCanvasDimensionsForAspect(
+    String aspectRatio, {
+    int maxLongEdgePx = 2048,
+  }) {
+    final safeLong = maxLongEdgePx.clamp(32, 8192);
+    if (aspectRatio == '4:5') {
+      final w = (safeLong * 4 / 5).round();
+      return (w, safeLong);
+    }
+    // Default '9:16'
+    final w = (safeLong * 9 / 16).round();
+    return (w, safeLong);
+  }
+
   static ({int r, int g, int b, int a}) parseHexColor(String hex) {
     var clean = hex.trim().replaceFirst('#', '');
     if (clean.length == 6) {
@@ -201,6 +218,38 @@ abstract final class CollageMapper {
       canvasHeight: dims.$2,
       gutterPx: spec.spacingPx.clamp(0, 48),
       outerMarginPx: readOuterMarginPx(spec),
+      bgR: color.r,
+      bgG: color.g,
+      bgB: color.b,
+      bgA: color.a,
+    );
+  }
+
+  /// Builds a scaled [CollageNativeConfig] for full-resolution social export
+  /// (`maxLongEdgePx = 2048` -> `1152x2048` or `1638x2048`) while respecting
+  /// C++ ABI bounds (`gutterPx <= 48`, `outerMarginPx <= 64`).
+  static CollageNativeConfig toExportNativeConfig(
+    CollageSpec spec, {
+    int maxLongEdgePx = 2048,
+  }) {
+    final tpl = templateIdFromSchema(
+      spec.templateId,
+      slotCount: spec.slots.length,
+    );
+    final dims = exportCanvasDimensionsForAspect(
+      spec.aspectRatio,
+      maxLongEdgePx: maxLongEdgePx,
+    );
+    final scale = dims.$1 / 540.0;
+    final scaledGutter = (spec.spacingPx * scale).round().clamp(0, 48);
+    final scaledMargin = (readOuterMarginPx(spec) * scale).round().clamp(0, 64);
+    final color = parseHexColor(spec.backgroundHex);
+    return CollageNativeConfig(
+      templateId: tpl,
+      canvasWidth: dims.$1,
+      canvasHeight: dims.$2,
+      gutterPx: scaledGutter,
+      outerMarginPx: scaledMargin,
       bgR: color.r,
       bgG: color.g,
       bgB: color.b,

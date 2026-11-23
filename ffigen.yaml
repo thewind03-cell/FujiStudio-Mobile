@@ -21,6 +21,7 @@ structs:
     - 'FsGeometryProposal'
     - 'FsCollageInputSlot'
     - 'FsCollageConfig'
+    - 'FsOutputUsmParams'
 enums:
   include:
     - 'FsStatusCode'
