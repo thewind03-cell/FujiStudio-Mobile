@@ -37,6 +37,7 @@ abstract interface class StudioNativeGateway {
   Future<GeometryProposalNative> analyzeGeometryOnSurface({
     required int surfaceId,
     required int targetAspectPreset,
+    bool useRescuedBuffer = false,
   });
 
   Future<StudioRenderResult> renderGeometryOnSurface({
@@ -87,10 +88,12 @@ final class NativeWorkerStudioGateway implements StudioNativeGateway {
   Future<GeometryProposalNative> analyzeGeometryOnSurface({
     required int surfaceId,
     required int targetAspectPreset,
+    bool useRescuedBuffer = false,
   }) {
     return _worker.analyzeGeometryOnSurface(
       surfaceId: surfaceId,
       targetAspectPreset: targetAspectPreset,
+      useRescuedBuffer: useRescuedBuffer,
     );
   }
 
@@ -576,6 +579,7 @@ final class StudioEditorController extends ChangeNotifier {
       final nativeProp = await _nativeGateway.analyzeGeometryOnSurface(
         surfaceId: surfaceId,
         targetAspectPreset: currentPreset,
+        useRescuedBuffer: DnaRescueMapper.isEdited(_state.recipe.dnaRescue),
       );
       if (_disposed) return;
 

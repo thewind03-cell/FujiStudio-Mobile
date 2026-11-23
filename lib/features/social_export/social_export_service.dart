@@ -321,36 +321,35 @@ final class SocialExportService {
     await ensureSufficientStorageSpace(itemCount: 1);
     final deviceTotalRamBytes = await _getDeviceTotalRamBytes();
     _activeExports++;
-
-    final tempDirPath = await _storageGateway.getExportTempDirectory();
-    Directory(tempDirPath).createSync(recursive: true);
-
-    final resolvedPair =
-        pairedAsset ?? _sessionController.pairedAssetForItem(itemId);
-    final resolvedItem = _sessionController.sessionItemById(itemId);
-    final baseRecipe =
-        recipe ?? resolvedItem?.editRecipe ?? _defaultNeutralRecipe();
-    if (resolvedPair == null) {
-      _activeExports = math.max(0, _activeExports - 1);
-      throw StateError('Missing PairedAsset for item $itemId');
-    }
-
-    final effectiveProfile = exportProfileOverride ?? baseRecipe.exportProfile;
-    final updatedRecipe = baseRecipe.copyWith(exportProfile: effectiveProfile);
-    final nativeConfig = ExportMapper.toNativeConfig(effectiveProfile);
-
-    final seq = ++_tempSeq;
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final rawInputPath =
-        '$tempDirPath${Platform.pathSeparator}raw_in_${seq}_$stamp.rgba';
-    final rawOutputPath =
-        '$tempDirPath${Platform.pathSeparator}raw_out_${seq}_$stamp.rgba';
-    final rafTempJpegPath =
-        '$tempDirPath${Platform.pathSeparator}raf_ext_${seq}_$stamp.jpg';
-
-    final tempPathsToClean = <String>[rawInputPath, rawOutputPath];
+    final tempPathsToClean = <String>[];
 
     try {
+      final tempDirPath = await _storageGateway.getExportTempDirectory();
+      Directory(tempDirPath).createSync(recursive: true);
+
+      final resolvedPair =
+          pairedAsset ?? _sessionController.pairedAssetForItem(itemId);
+      final resolvedItem = _sessionController.sessionItemById(itemId);
+      final baseRecipe =
+          recipe ?? resolvedItem?.editRecipe ?? _defaultNeutralRecipe();
+      if (resolvedPair == null) {
+        throw StateError('Missing PairedAsset for item $itemId');
+      }
+
+      final effectiveProfile = exportProfileOverride ?? baseRecipe.exportProfile;
+      final updatedRecipe = baseRecipe.copyWith(exportProfile: effectiveProfile);
+      final nativeConfig = ExportMapper.toNativeConfig(effectiveProfile);
+
+      final seq = ++_tempSeq;
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final rawInputPath =
+          '$tempDirPath${Platform.pathSeparator}raw_in_${seq}_$stamp.rgba';
+      final rawOutputPath =
+          '$tempDirPath${Platform.pathSeparator}raw_out_${seq}_$stamp.rgba';
+      final rafTempJpegPath =
+          '$tempDirPath${Platform.pathSeparator}raf_ext_${seq}_$stamp.jpg';
+
+      tempPathsToClean.addAll(<String>[rawInputPath, rawOutputPath]);
       final maxDecodeLongEdge = computeDecodeLongEdge(
         targetMaxLongEdge: nativeConfig.maxLongEdgePx,
         geometry: updatedRecipe.geometry,
@@ -472,17 +471,18 @@ final class SocialExportService {
     await _prepareExportTempDir();
     await ensureSufficientStorageSpace(itemCount: 1);
     _activeExports++;
-
-    final tempDirPath = await _storageGateway.getExportTempDirectory();
-    Directory(tempDirPath).createSync(recursive: true);
-
-    final seq = ++_tempSeq;
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final rawOutputPath =
-        '$tempDirPath${Platform.pathSeparator}collage_out_${seq}_$stamp.rgba';
-    final tempPathsToClean = <String>[rawOutputPath];
+    final tempPathsToClean = <String>[];
 
     try {
+      final tempDirPath = await _storageGateway.getExportTempDirectory();
+      Directory(tempDirPath).createSync(recursive: true);
+
+      final seq = ++_tempSeq;
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final rawOutputPath =
+          '$tempDirPath${Platform.pathSeparator}collage_out_${seq}_$stamp.rgba';
+      tempPathsToClean.add(rawOutputPath);
+
       final config = CollageMapper.toExportNativeConfig(
         spec,
         maxLongEdgePx: maxLongEdgePx,
@@ -527,6 +527,12 @@ final class SocialExportService {
             zoom: slot.zoom,
             dnaRescue: DnaRescueMapper.isEdited(item.editRecipe.dnaRescue)
                 ? DnaRescueMapper.toNativeParams(item.editRecipe.dnaRescue)
+                : null,
+            geometry: GeometryMapper.isEdited(item.editRecipe.geometry)
+                ? GeometryMapper.toNativeParams(
+                    item.editRecipe.geometry,
+                    highQuality: true,
+                  )
                 : null,
           ),
         );
@@ -654,9 +660,10 @@ final class SocialExportService {
     }
 
     final jpgUri = pairedAsset.primaryAsset.uri;
+    final isContent = jpgUri.startsWith('content://');
     final decoded = await _storageGateway.decodeSourceForExportToRawFile(
       source: jpgUri,
-      isContentUri: true,
+      isContentUri: isContent,
       outRawPath: outRawPath,
       maxDecodeLongEdge: maxDecodeLongEdge,
     );
@@ -665,7 +672,7 @@ final class SocialExportService {
       width: decoded.width,
       height: decoded.height,
       exifSource: jpgUri,
-      exifSourceIsContentUri: true,
+      exifSourceIsContentUri: isContent,
     );
   }
 

@@ -13,6 +13,9 @@
   #define FS_HAS_ARM64_NEON 0
 #endif
 
+static_assert(sizeof(FsDnaRescueParams) == 24,
+              "FsDnaRescueParams ABI size must be 24 bytes");
+
 namespace {
 
 int32_t validate_rgba_dimensions(
@@ -56,8 +59,8 @@ void apply_dna_rescue_scalar_range(
   constexpr float kInv255 = 1.0f / 255.0f;
   constexpr float kInvCbRadius = 1.0f / 0.11f;
   constexpr float kInvCrRadius = 1.0f / 0.09f;
-  const float h_lo = std::max(a, h - 0.15f);
-  const float h_span = h - h_lo;
+  const float h_lo = h - 0.15f;
+  constexpr float kHSpan = 0.15f;
 
   for (size_t idx = start_pixel; idx < start_pixel + pixel_count; ++idx) {
     const size_t i = idx * 4u;
@@ -93,10 +96,10 @@ void apply_dna_rescue_scalar_range(
         a * c_max * s * toe * one_minus_t2 * one_minus_t2;
 
     float guard = 1.0f;
-    if (v >= h) {
+    if (y_eff >= h) {
       guard = 0.0f;
-    } else if (v > h_lo && h_span > 1e-6f) {
-      const float u = (h - v) / h_span;
+    } else if (y_eff > h_lo) {
+      const float u = (h - y_eff) / kHSpan;
       guard = u * u * (3.0f - 2.0f * u);
     }
 
@@ -183,18 +186,18 @@ inline void neon_process_4_pixels(
   const float32x4_t delta =
       vmulq_f32(vdupq_n_f32(a * c_max * s), vmulq_f32(toe, omt4));
 
-  const float h_lo = std::max(a, h - 0.15f);
-  const float h_span = std::max(h - h_lo, 1e-6f);
+  const float h_lo = h - 0.15f;
+  constexpr float kHSpan = 0.15f;
   const float32x4_t v_h = vdupq_n_f32(h);
   const float32x4_t v_h_lo = vdupq_n_f32(h_lo);
   const float32x4_t u_raw =
-      vdivq_f32(vsubq_f32(v_h, v), vdupq_n_f32(h_span));
+      vdivq_f32(vsubq_f32(v_h, y_eff), vdupq_n_f32(kHSpan));
   const float32x4_t u = vminq_f32(v_one, vmaxq_f32(v_zero, u_raw));
   const float32x4_t smooth = vmulq_f32(
       vmulq_f32(u, u),
       vsubq_f32(vdupq_n_f32(3.0f), vmulq_f32(vdupq_n_f32(2.0f), u)));
-  const uint32x4_t le_lo = vcleq_f32(v, v_h_lo);
-  const uint32x4_t ge_hi = vcgeq_f32(v, v_h);
+  const uint32x4_t le_lo = vcleq_f32(y_eff, v_h_lo);
+  const uint32x4_t ge_hi = vcgeq_f32(y_eff, v_h);
   const float32x4_t guard = vbslq_f32(
       ge_hi,
       v_zero,

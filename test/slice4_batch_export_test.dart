@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fujistudio_mobile/core/ffi/bindings.g.dart';
 import 'package:fujistudio_mobile/core/ffi/native_worker.dart';
+import 'package:fujistudio_mobile/core/schema/collage_spec.dart';
 import 'package:fujistudio_mobile/core/schema/edit_recipe.dart';
 import 'package:fujistudio_mobile/core/session/session_store.dart';
 import 'package:fujistudio_mobile/core/storage/asset_pairing_engine.dart';
@@ -41,8 +42,11 @@ final class _BatchFakeStorageGateway implements StorageGateway {
   int cleanOrphanCalls = 0;
   int? lastCleanOlderThanSeconds;
   final List<int> requestedDecodeLongEdges = <int>[];
+  final List<bool> decodeIsContentUris = <bool>[];
+  final List<bool> encodeExifIsContentUris = <bool>[];
   final List<String> savedDisplayNames = <String>[];
   final Set<String> activeFdHandles = <String>{};
+  bool throwOnGetExportTempDirectory = false;
 
   Future<void> Function(int callIndex)? onBeforeDecode;
   Future<void> Function(int callIndex)? onAfterEncode;
@@ -71,6 +75,7 @@ final class _BatchFakeStorageGateway implements StorageGateway {
   }) async {
     decodeCalls++;
     final callIdx = decodeCalls;
+    decodeIsContentUris.add(isContentUri);
     requestedDecodeLongEdges.add(maxDecodeLongEdge);
     activeDecodes++;
     if (activeDecodes > peakConcurrentDecodes) {
@@ -107,6 +112,7 @@ final class _BatchFakeStorageGateway implements StorageGateway {
       peakConcurrentEncodes = activeEncodes;
     }
     try {
+      encodeExifIsContentUris.add(exifSourceIsContentUri);
       expect(File(rawRgbaPath).existsSync(), isTrue);
       await Future<void>.delayed(const Duration(milliseconds: 5));
       savedDisplayNames.add(displayName);
@@ -135,7 +141,12 @@ final class _BatchFakeStorageGateway implements StorageGateway {
   }
 
   @override
-  Future<String> getExportTempDirectory() async => exportTmpDir;
+  Future<String> getExportTempDirectory() async {
+    if (throwOnGetExportTempDirectory) {
+      throw StateError('Simulated getExportTempDirectory failure');
+    }
+    return exportTmpDir;
+  }
 
   @override
   Future<int> getAvailableExportSpaceBytes() async => availableSpaceBytes;
@@ -772,6 +783,81 @@ void main() {
         expect(orphan.existsSync(), isFalse);
         expect(gateway.cleanOrphanCalls, equals(1));
         expect(gateway.lastCleanOlderThanSeconds, equals(3600));
+      },
+    );
+
+    test(
+      'local .JPG path (/tmp/DSCF0001.JPG) passes isContentUri: false and exifSourceIsContentUri: false',
+      () async {
+        final localJpgPair = PairedAsset(
+          pairKey: 'tmp|dscf0001',
+          stem: 'DSCF0001',
+          normalizedDir: 'tmp',
+          kind: AssetPairKind.jpgOnly,
+          primaryAsset: const RawMediaFileDescriptor(
+            mediaId: 'local_1',
+            uri: '/tmp/DSCF0001.JPG',
+            displayName: 'DSCF0001.JPG',
+            relativePath: 'tmp/',
+            mimeType: 'image/jpeg',
+            sizeBytes: 12000,
+            dateTakenMs: 100000,
+            dateModifiedSec: 100,
+            width: 3000,
+            height: 2000,
+          ),
+          capturedAtMs: 100000,
+        );
+
+        await exportService.exportSingleItem(
+          itemId: 'item_local_jpg',
+          pairedAsset: localJpgPair,
+        );
+
+        expect(gateway.decodeIsContentUris, equals(<bool>[false]));
+        expect(gateway.encodeExifIsContentUris, equals(<bool>[false]));
+      },
+    );
+
+    test(
+      'exception in getExportTempDirectory does not leak _activeExports > 0 during exportSingleItem or exportCollage',
+      () async {
+        // Trigger initial startup cleanup once so subsequent calls isolate export paths.
+        await exportService.exportSingleItem(
+          itemId: sessionController.state.galleryOrderedItemIds.first,
+        );
+        final baselineCleanCalls = gateway.cleanOrphanCalls;
+
+        gateway.throwOnGetExportTempDirectory = true;
+
+        await expectLater(
+          exportService.exportSingleItem(
+            itemId: sessionController.state.galleryOrderedItemIds.first,
+          ),
+          throwsStateError,
+        );
+
+        await exportService.cleanupOrphanTempFiles();
+        expect(gateway.cleanOrphanCalls, equals(baselineCleanCalls + 1));
+
+        final ids = sessionController.state.galleryOrderedItemIds;
+        await expectLater(
+          exportService.exportCollage(
+            spec: CollageSpec(
+              collageId: 'col_err',
+              templateId: 'split_2_v',
+              aspectRatio: '9:16',
+              slots: <CollageSlot>[
+                CollageSlot(slotIndex: 0, itemId: ids[0]),
+                CollageSlot(slotIndex: 1, itemId: ids[1]),
+              ],
+            ),
+          ),
+          throwsStateError,
+        );
+
+        await exportService.cleanupOrphanTempFiles();
+        expect(gateway.cleanOrphanCalls, equals(baselineCleanCalls + 2));
       },
     );
   });

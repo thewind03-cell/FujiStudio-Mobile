@@ -11,6 +11,7 @@ import '../../core/storage/asset_pairing_engine.dart';
 import '../../core/storage/proxy_cache_manager.dart';
 import '../session_picker/session_controller.dart';
 import '../studio_editor/dna_rescue_mapper.dart';
+import '../studio_editor/geometry_mapper.dart';
 import 'collage_mapper.dart';
 
 /// Native gateway for [StoryCollageController] so widget/unit tests can run
@@ -26,6 +27,13 @@ abstract interface class StoryCollageNativeGateway {
     required int height,
     required Uint8List sourceRgba,
     required DnaRescueNativeParams params,
+  });
+
+  Future<({Uint8List rgbaBytes, int width, int height})?> applyGeometryPreview({
+    required int width,
+    required int height,
+    required Uint8List sourceRgba,
+    required GeometryNativeParams params,
   });
 }
 
@@ -62,6 +70,52 @@ final class NativeWorkerCollageGateway implements StoryCollageNativeGateway {
       );
       if (!result.isOk) return null;
       return result.rgbaBytes;
+    } finally {
+      await _worker.closeStudioSurface(surfaceId);
+    }
+  }
+
+  @override
+  Future<({Uint8List rgbaBytes, int width, int height})?> applyGeometryPreview({
+    required int width,
+    required int height,
+    required Uint8List sourceRgba,
+    required GeometryNativeParams params,
+  }) async {
+    final clamped = await _worker.clampCrop(
+      srcWidth: width,
+      srcHeight: height,
+      rotationDeg: params.rotationDeg,
+      aspectPreset: params.aspectPreset,
+      requestedBox: params.cropBox,
+    );
+    if (!clamped.isOk || clamped.pixelWidth <= 0 || clamped.pixelHeight <= 0) {
+      return null;
+    }
+
+    final surfaceId = await _worker.openStudioSurface(
+      width: width,
+      height: height,
+      sourceRgba: sourceRgba,
+    );
+    try {
+      final result = await _worker.renderGeometryOnSurface(
+        surfaceId: surfaceId,
+        params: GeometryNativeParams(
+          rotationDeg: params.rotationDeg,
+          aspectPreset: params.aspectPreset,
+          cropBox: clamped.clampedBox,
+          highQuality: params.highQuality,
+        ),
+        outWidth: clamped.pixelWidth,
+        outHeight: clamped.pixelHeight,
+      );
+      if (!result.isOk || result.rgbaBytes == null) return null;
+      return (
+        rgbaBytes: result.rgbaBytes!,
+        width: result.width,
+        height: result.height,
+      );
     } finally {
       await _worker.closeStudioSurface(surfaceId);
     }
@@ -176,24 +230,26 @@ final class StoryCollageController extends ChangeNotifier {
     required this._proxyCacheManager,
     required this._nativeGateway,
     this._slotLoader,
+    CollageSpec? initialSpec,
     this.maxSlotLongEdge = 1080,
   }) : assert(initialItemIds.length >= 2 && initialItemIds.length <= 4) {
     final defaultTpl = _defaultTemplateForCount(initialItemIds.length);
-    final initialSpec = CollageMapper.withOuterMarginPx(
-      CollageSpec(
-        collageId: 'col_${DateTime.now().millisecondsSinceEpoch}',
-        templateId: CollageMapper.templateIdToSchema(defaultTpl),
-        aspectRatio: '9:16',
-        backgroundHex: CollagePaperTheme.darkroom.hex,
-        spacingPx: CollageMapper.defaultGutterPx,
-        slots: <CollageSlot>[
-          for (var i = 0; i < initialItemIds.length; i++)
-            CollageSlot(slotIndex: i, itemId: initialItemIds[i]),
-        ],
-      ),
-      CollageMapper.defaultOuterMarginPx,
-    );
-    _state = StoryCollageState(spec: initialSpec);
+    final resolvedSpec = initialSpec ??
+        CollageMapper.withOuterMarginPx(
+          CollageSpec(
+            collageId: 'col_${DateTime.now().millisecondsSinceEpoch}',
+            templateId: CollageMapper.templateIdToSchema(defaultTpl),
+            aspectRatio: '9:16',
+            backgroundHex: CollagePaperTheme.darkroom.hex,
+            spacingPx: CollageMapper.defaultGutterPx,
+            slots: <CollageSlot>[
+              for (var i = 0; i < initialItemIds.length; i++)
+                CollageSlot(slotIndex: i, itemId: initialItemIds[i]),
+            ],
+          ),
+          CollageMapper.defaultOuterMarginPx,
+        );
+    _state = StoryCollageState(spec: resolvedSpec);
   }
 
   final SessionController sessionController;
@@ -288,6 +344,7 @@ final class StoryCollageController extends ChangeNotifier {
     final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
     ui.ImageDescriptor? descriptor;
     ui.Codec? codec;
+    ui.Image? currentImage;
     try {
       descriptor = await ui.ImageDescriptor.encoded(buffer);
       final naturalW = descriptor.width;
@@ -306,50 +363,79 @@ final class StoryCollageController extends ChangeNotifier {
         targetHeight: targetHeight,
       );
       final frameInfo = await codec.getNextFrame();
-      var image = frameInfo.image;
-      final byteData = await image.toByteData(
+      currentImage = frameInfo.image;
+      final byteData = await currentImage.toByteData(
         format: ui.ImageByteFormat.rawRgba,
       );
       if (byteData == null) {
-        image.dispose();
         throw StateError('Failed to extract RGBA bytes for ${asset.displayName}');
       }
       var rgba = byteData.buffer.asUint8List();
 
       if (DnaRescueMapper.isEdited(dnaRescue)) {
         final rescued = await _nativeGateway.applyDnaRescuePreview(
-          width: image.width,
-          height: image.height,
+          width: currentImage.width,
+          height: currentImage.height,
           sourceRgba: rgba,
           params: DnaRescueMapper.toNativeParams(dnaRescue),
         );
         if (_disposed) {
-          image.dispose();
           throw StateError('Controller disposed during slot load.');
         }
         if (rescued != null && rescued.length == rgba.length) {
           final rescuedImg = await _decodeRgba(
             rescued,
-            image.width,
-            image.height,
+            currentImage.width,
+            currentImage.height,
           );
-          image.dispose();
+          currentImage.dispose();
+          currentImage = rescuedImg;
           if (_disposed) {
-            rescuedImg.dispose();
             throw StateError('Controller disposed during slot decode.');
           }
-          image = rescuedImg;
           rgba = rescued;
         }
       }
 
-      return StoryCollageSlotFrame(
+      final geometry =
+          sessionController.sessionItemById(itemId)?.editRecipe.geometry;
+      if (geometry != null && GeometryMapper.isEdited(geometry)) {
+        final geomRes = await _nativeGateway.applyGeometryPreview(
+          width: currentImage.width,
+          height: currentImage.height,
+          sourceRgba: rgba,
+          params: GeometryMapper.toNativeParams(geometry, highQuality: true),
+        );
+        if (_disposed) {
+          throw StateError('Controller disposed during geometry slot load.');
+        }
+        if (geomRes != null) {
+          final geomImg = await _decodeRgba(
+            geomRes.rgbaBytes,
+            geomRes.width,
+            geomRes.height,
+          );
+          currentImage.dispose();
+          currentImage = geomImg;
+          if (_disposed) {
+            throw StateError('Controller disposed during geometry slot decode.');
+          }
+          rgba = geomRes.rgbaBytes;
+        }
+      }
+
+      final frame = StoryCollageSlotFrame(
         itemId: itemId,
-        width: image.width,
-        height: image.height,
+        width: currentImage.width,
+        height: currentImage.height,
         rgbaBytes: rgba,
-        image: image,
+        image: currentImage,
       );
+      currentImage = null;
+      return frame;
+    } catch (_) {
+      currentImage?.dispose();
+      rethrow;
     } finally {
       codec?.dispose();
       descriptor?.dispose();
@@ -399,8 +485,8 @@ final class StoryCollageController extends ChangeNotifier {
     final slots = List<CollageSlot>.of(_state.spec.slots);
     final slotA = slots[indexA];
     final slotB = slots[indexB];
-    slots[indexA] = CollageSlot(slotIndex: indexA, itemId: slotB.itemId);
-    slots[indexB] = CollageSlot(slotIndex: indexB, itemId: slotA.itemId);
+    slots[indexA] = slotB.copyWith(slotIndex: indexA);
+    slots[indexB] = slotA.copyWith(slotIndex: indexB);
     _state = _state.copyWith(
       spec: _state.spec.copyWith(slots: slots),
       selectedSlotIndex: indexB,

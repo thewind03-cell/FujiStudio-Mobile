@@ -168,20 +168,7 @@ void test_strict_monotonicity(std::mt19937_64& rng) {
           ray_out[(step + 1) * 4u + 0u],
           ray_out[(step + 1) * 4u + 1u],
           ray_out[(step + 1) * 4u + 2u]);
-      if (y1 + 1e-6f < y0) {
-        const float dip = y0 - y1;
-        if (dip > 0.004f) {
-          std::cerr << "BIG RAY DIP ray=" << ray << " step=" << step
-                    << " s=" << params.shadow_lift << " a=" << params.midtone_anchor
-                    << " h=" << params.highlight_protect << " mode=" << params.mode
-                    << " in0=(" << int(ray_in[step*4]) << "," << int(ray_in[step*4+1]) << "," << int(ray_in[step*4+2]) << ")"
-                    << " in1=(" << int(ray_in[(step+1)*4]) << "," << int(ray_in[(step+1)*4+1]) << "," << int(ray_in[(step+1)*4+2]) << ")"
-                    << " out0=(" << int(ray_out[step*4]) << "," << int(ray_out[step*4+1]) << "," << int(ray_out[step*4+2]) << ")"
-                    << " out1=(" << int(ray_out[(step+1)*4]) << "," << int(ray_out[(step+1)*4+1]) << "," << int(ray_out[(step+1)*4+2]) << ")"
-                    << " dip=" << dip << "\n";
-        }
-      }
-      expect(y1 + (2.0f / 255.0f) >= y0, "color ray Y_out must be non-decreasing within u8 quantization");
+      expect(y1 + (1.0f / 255.0f) >= y0, "color ray Y_out must be non-decreasing within u8 quantization");
     }
   }
 }
@@ -590,8 +577,8 @@ void test_skin_protect_gradients_and_scalar_neon_parity() {
     const float sp = std::clamp(params.skin_protect, 0.0f, 1.0f);
     const float c_max =
         (params.mode == FS_DNA_MODE_DEEP_RESCUE) ? 1.05f : 0.85f;
-    const float h_lo = std::max(a, h - 0.15f);
-    const float h_span = h - h_lo;
+    const float h_lo = h - 0.15f;
+    constexpr float kHSpan = 0.15f;
     for (size_t idx = 0; idx < pixels; ++idx) {
       const size_t i = idx * 4u;
       const float r = static_cast<float>(in[i + 0u]) / 255.0f;
@@ -613,10 +600,10 @@ void test_skin_protect_gradients_and_scalar_neon_parity() {
       const float omt = 1.0f - t;
       const float delta = a * c_max * s * toe * omt * omt * omt * omt;
       float guard = 1.0f;
-      if (v >= h) {
+      if (y_eff >= h) {
         guard = 0.0f;
-      } else if (v > h_lo && h_span > 1e-6f) {
-        const float u = (h - v) / h_span;
+      } else if (y_eff > h_lo) {
+        const float u = (h - y_eff) / kHSpan;
         guard = u * u * (3.0f - 2.0f * u);
       }
       const float gain = std::min((y_eff + delta * guard) / std::max(y_eff, 1e-6f),
@@ -741,6 +728,42 @@ void test_skin_protect_gradients_and_scalar_neon_parity() {
   }
 }
 
+// 12. Saturated Primary Ray Regression (0,0,B) & (R,0,0) across 0..255
+void test_saturated_ray_regression() {
+  constexpr size_t kSteps = 256;
+  constexpr size_t kBytes = kSteps * 4u;
+  const FsDnaRescueParams params =
+      make_params(1.0f, 0.70f, 0.75f, FS_DNA_MODE_DEEP_RESCUE, 1, 0.0f);
+
+  std::vector<uint8_t> blue_in(kBytes, 0u);
+  std::vector<uint8_t> blue_out(kBytes, 0u);
+  std::vector<uint8_t> red_in(kBytes, 0u);
+  std::vector<uint8_t> red_out(kBytes, 0u);
+
+  for (size_t v = 0; v < kSteps; ++v) {
+    blue_in[v * 4u + 2u] = static_cast<uint8_t>(v);
+    blue_in[v * 4u + 3u] = 255u;
+    red_in[v * 4u + 0u] = static_cast<uint8_t>(v);
+    red_in[v * 4u + 3u] = 255u;
+  }
+
+  expect(fs_dna_rescue_apply_rgba_into(
+             blue_in.data(), kBytes, static_cast<int32_t>(kSteps), 1, &params,
+             blue_out.data(), kBytes) == FS_OK,
+         "Suite 12 blue ray apply must succeed");
+  expect(fs_dna_rescue_apply_rgba_into(
+             red_in.data(), kBytes, static_cast<int32_t>(kSteps), 1, &params,
+             red_out.data(), kBytes) == FS_OK,
+         "Suite 12 red ray apply must succeed");
+
+  for (size_t v = 1; v < kSteps; ++v) {
+    expect(blue_out[v * 4u + 2u] >= blue_out[(v - 1u) * 4u + 2u],
+           "Suite 12: (0,0,B) out_B[B] must be >= out_B[B-1] for all B=1..255");
+    expect(red_out[v * 4u + 0u] >= red_out[(v - 1u) * 4u + 0u],
+           "Suite 12: (R,0,0) out_R[R] must be >= out_R[R-1] for all R=1..255");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -757,12 +780,13 @@ int main() {
   test_zero_haze_black_floor_guard();
   test_portrait_skin_midtone_isolation();
   test_skin_protect_gradients_and_scalar_neon_parity();
+  test_saturated_ray_regression();
 
   if (g_failures > 0) {
     std::cerr << "dna_rescue_property_test FAILED with " << g_failures
               << " failure(s).\n";
     return 1;
   }
-  std::cout << "dna_rescue_property_test PASSED (all 11 property suites green).\n";
+  std::cout << "dna_rescue_property_test PASSED (all 12 property suites green).\n";
   return 0;
 }

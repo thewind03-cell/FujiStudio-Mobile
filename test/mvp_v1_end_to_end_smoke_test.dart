@@ -208,6 +208,7 @@ final class _SmokeStudioGateway implements StudioNativeGateway {
   Future<GeometryProposalNative> analyzeGeometryOnSurface({
     required int surfaceId,
     required int targetAspectPreset,
+    bool useRescuedBuffer = false,
   }) async {
     return GeometryProposalNative(
       statusCode: FsStatusCode.FS_OK.value,
